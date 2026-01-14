@@ -2,6 +2,7 @@ import os
 import tempfile
 
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from loguru import logger
 
@@ -12,6 +13,45 @@ from bot.utils.transcribe import transcribe_audio
 settings = Settings()
 
 router = Router(name="transcribe")
+
+
+async def safe_edit_text(message: types.Message, text: str, parse_mode: str = "HTML") -> bool:
+    """Безопасно редактирует текст сообщения с обработкой ошибок."""
+    try:
+        await message.edit_text(text, parse_mode=parse_mode)
+        return True
+    except TelegramBadRequest as e:
+        if "message to edit not found" in str(e).lower() or "message is not modified" in str(e).lower():
+            logger.warning(f"Не удалось отредактировать сообщение: {e}")
+            return False
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        return False
+
+
+async def safe_delete(message: types.Message) -> bool:
+    """Безопасно удаляет сообщение с обработкой ошибок."""
+    try:
+        await message.delete()
+        return True
+    except TelegramBadRequest as e:
+        if "message to delete not found" in str(e).lower():
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+            return False
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+        return False
+
+
+async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML") -> types.Message | None:
+    """Безопасно отправляет ответное сообщение с обработкой ошибок."""
+    try:
+        return await message.answer(text, parse_mode=parse_mode)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения: {e}")
+        return None
 
 
 def get_file_extension(file_type: FileType, original_filename: str | None = None) -> str:
@@ -75,10 +115,14 @@ def is_audio_format(filename: str | None) -> bool:
 @router.message(F.voice | F.audio | F.video | F.video_note | F.document)
 async def transcribe_handler(message: types.Message) -> None:
     """Обработчик транскрибации голосовых сообщений, аудио и видео файлов."""
-    status_msg = await message.answer("⏳ <b>Начинаю транскрибацию...</b>", parse_mode="HTML")
+    status_msg = await safe_answer(message, "⏳ <b>Начинаю транскрибацию...</b>", parse_mode="HTML")
+    
+    if not status_msg:
+        logger.error("Не удалось отправить начальное статусное сообщение")
+        return
 
     if not message.bot:
-        await status_msg.edit_text("❌ <b>Ошибка:</b> бот не инициализирован.", parse_mode="HTML")
+        await safe_edit_text(status_msg, "❌ <b>Ошибка:</b> бот не инициализирован.", parse_mode="HTML")
         return
 
     # Определяем файл для скачивания
@@ -120,7 +164,8 @@ async def transcribe_handler(message: types.Message) -> None:
             ext = get_file_extension(FileType.AUDIO, original_name)
             file_name = original_name or f"audio_{file_id}.{ext}"
         else:
-            await status_msg.edit_text(
+            await safe_edit_text(
+                status_msg,
                 "❌ <b>Неподдерживаемый формат файла</b>\n\n"
                 f"🎵 <b>Аудио:</b> <code>{', '.join([fmt.value.upper() for fmt in AudioFormat])}</code>\n"
                 f"🎬 <b>Видео:</b> <code>{', '.join([fmt.value.upper() for fmt in VideoFormat])}</code>",
@@ -128,11 +173,11 @@ async def transcribe_handler(message: types.Message) -> None:
             )
             return
     else:
-        await status_msg.edit_text("❌ <b>Не удалось определить тип файла.</b>", parse_mode="HTML")
+        await safe_edit_text(status_msg, "❌ <b>Не удалось определить тип файла.</b>", parse_mode="HTML")
         return
 
     if not file_id or not file_name:
-        await status_msg.edit_text("❌ <b>Не удалось определить файл для транскрибации.</b>", parse_mode="HTML")
+        await safe_edit_text(status_msg, "❌ <b>Не удалось определить файл для транскрибации.</b>", parse_mode="HTML")
         return
 
     try:
@@ -140,7 +185,7 @@ async def transcribe_handler(message: types.Message) -> None:
         file_info = await message.bot.get_file(file_id)
 
         if not file_info.file_path:
-            await status_msg.edit_text("❌ <b>Не удалось получить путь к файлу.</b>", parse_mode="HTML")
+            await safe_edit_text(status_msg, "❌ <b>Не удалось получить путь к файлу.</b>", parse_mode="HTML")
             return
 
         # Создаем временную директорию для работы
@@ -148,12 +193,13 @@ async def transcribe_handler(message: types.Message) -> None:
             temp_file_path = os.path.join(temp_dir, file_name)
 
             # Скачиваем файл
-            await status_msg.edit_text("📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
+            await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
             await message.bot.download_file(file_info.file_path, temp_file_path)
             logger.info(f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}")
 
             # Запускаем транскрибацию в отдельном потоке
-            await status_msg.edit_text(
+            await safe_edit_text(
+                status_msg,
                 "🔄 <b>Обрабатываю аудио...</b>\n"
                 "⏱ Это может занять некоторое время",
                 parse_mode="HTML",
@@ -167,19 +213,21 @@ async def transcribe_handler(message: types.Message) -> None:
             )
 
             if transcribed_text:
-                await status_msg.delete()
-                await message.answer(
+                await safe_delete(status_msg)
+                await safe_answer(
+                    message,
                     f"✅ <b>Транскрибация завершена</b>\n\n"
                     f"📝 <b>Текст:</b>\n{transcribed_text}",
                     parse_mode="HTML",
                 )
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
-                await status_msg.edit_text("⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+                await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Ошибка при обработке файла: {e}")
-        await status_msg.edit_text(
+        await safe_edit_text(
+            status_msg,
             f"❌ <b>Произошла ошибка при транскрибации</b>\n\n"
             f"<code>{str(e)}</code>",
             parse_mode="HTML",

@@ -13,6 +13,14 @@ ENV PYTHONPATH=$SRC_DIR \
     PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1
 
+# Установка системных зависимостей для сборки пакетов
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    llvm \
+    llvm-dev \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Установка зависимостей
 WORKDIR $SRC_DIR
 

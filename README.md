@@ -2,6 +2,21 @@
 
 Telegram бот для транскрибации голосовых сообщений, аудио и видео файлов с использованием OpenAI Whisper.
 
+# TODO:
+
+1. большое сообщение не отправляется
+- ping-pong-bot  | 2026-01-14 17:35:06.125 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:17 - Модель: medium, Язык: Russian, Устройство: cuda
+ping-pong-bot  | 2026-01-14 17:35:06.126 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:22 - Очищен кеш CUDA
+
+
+ping-pong-bot  | 2026-01-14 17:35:55.074 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:37 - Транскрибация завершена успешно
+ping-pong-bot  | 2026-01-14 17:35:55.151 | ERROR    | bot.handlers.transcribe:safe_answer:53 - Ошибка при отправке сообщения: Telegram server says - Bad Request: message is too long
+ping-pong-bot  | 2026-01-14 17:35:55.151 | INFO     | bot.handlers.transcribe:transcribe_handler:223 - Транскрибация завершена для файла 2025-09-15_11-02-59.mkv
+
+2. большой файл не обрабатывается
+
+ping-pong-bot  | 2026-01-14 17:32:43.158 | ERROR    | bot.handlers.transcribe:transcribe_handler:228 - Ошибка при обработке файла: Telegram server says - Bad Request: file is too big
+
 ## Возможности
 
 - 🎙️ Транскрибация голосовых сообщений

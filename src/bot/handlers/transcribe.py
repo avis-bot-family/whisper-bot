@@ -14,6 +14,45 @@ settings = Settings()
 
 router = Router(name="transcribe")
 
+# Максимальная длина сообщения в Telegram (с запасом для HTML-тегов)
+# Telegram лимит: 4096 символов, но с HTML-тегами лучше использовать меньше
+MAX_MESSAGE_LENGTH = 3500
+
+
+def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
+    """Разбивает длинное сообщение на части, не превышающие лимит."""
+    if len(text) <= max_length:
+        return [text]
+    
+    parts = []
+    current_part = ""
+    
+    # Разбиваем по строкам, чтобы не разрывать слова
+    lines = text.split("\n")
+    
+    for line in lines:
+        # Если одна строка слишком длинная, разбиваем её по словам
+        if len(line) > max_length:
+            words = line.split(" ")
+            for word in words:
+                if len(current_part) + len(word) + 1 > max_length:
+                    if current_part:
+                        parts.append(current_part.strip())
+                        current_part = ""
+                current_part += word + " "
+        else:
+            # Проверяем, поместится ли строка в текущую часть
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                    current_part = ""
+            current_part += line + "\n"
+    
+    if current_part:
+        parts.append(current_part.strip())
+    
+    return parts
+
 
 async def safe_edit_text(message: types.Message, text: str, parse_mode: str = "HTML") -> bool:
     """Безопасно редактирует текст сообщения с обработкой ошибок."""
@@ -46,9 +85,52 @@ async def safe_delete(message: types.Message) -> bool:
 
 
 async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML") -> types.Message | None:
-    """Безопасно отправляет ответное сообщение с обработкой ошибок."""
+    """Безопасно отправляет ответное сообщение с обработкой ошибок.
+    
+    Автоматически разбивает длинные сообщения на части, если они превышают лимит Telegram.
+    """
     try:
         return await message.answer(text, parse_mode=parse_mode)
+    except TelegramBadRequest as e:
+        error_str = str(e).lower()
+        if "file is too big" in error_str or "message is too long" in error_str:
+            logger.warning(f"Сообщение слишком длинное, разбиваю на части: {e}")
+            # Разбиваем сообщение на части
+            parts = split_long_message(text, MAX_MESSAGE_LENGTH)
+            last_msg = None
+            for i, part in enumerate(parts):
+                try:
+                    if i == 0:
+                        # Первая часть отправляется как новое сообщение
+                        last_msg = await message.answer(part, parse_mode=parse_mode)
+                    else:
+                        # Остальные части отправляются как ответы на предыдущее сообщение
+                        if last_msg:
+                            last_msg = await last_msg.answer(part, parse_mode=parse_mode)
+                        else:
+                            last_msg = await message.answer(part, parse_mode=parse_mode)
+                except TelegramBadRequest as part_error:
+                    error_part_str = str(part_error).lower()
+                    if "message is too long" in error_part_str:
+                        # Если часть все еще слишком длинная, разбиваем её еще больше
+                        logger.warning(f"Часть {i+1} все еще слишком длинная, разбиваю дальше: {part_error}")
+                        smaller_parts = split_long_message(part, MAX_MESSAGE_LENGTH // 2)
+                        for j, smaller_part in enumerate(smaller_parts):
+                            try:
+                                if i == 0 and j == 0:
+                                    last_msg = await message.answer(smaller_part, parse_mode=parse_mode)
+                                elif last_msg:
+                                    last_msg = await last_msg.answer(smaller_part, parse_mode=parse_mode)
+                                else:
+                                    last_msg = await message.answer(smaller_part, parse_mode=parse_mode)
+                            except Exception as smaller_error:
+                                logger.error(f"Ошибка при отправке подчасти {j+1} части {i+1}: {smaller_error}")
+                    else:
+                        logger.error(f"Ошибка при отправке части сообщения {i+1}/{len(parts)}: {part_error}")
+                except Exception as part_error:
+                    logger.error(f"Ошибка при отправке части сообщения {i+1}/{len(parts)}: {part_error}")
+            return last_msg
+        raise
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
         return None

@@ -18,6 +18,40 @@ router = Router(name="transcribe")
 # Telegram лимит: 4096 символов, но с HTML-тегами лучше использовать меньше
 MAX_MESSAGE_LENGTH = 3500
 
+# Максимальный размер файла для транскрибации (в байтах)
+# 500 MB - разумный лимит для обработки
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
+
+
+def format_time(seconds: float) -> str:
+    """Форматирует время в секундах в формат MM:SS или HH:MM:SS."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes:02d}:{secs:02d}"
+
+
+def format_transcription_with_timestamps(segments: list[dict]) -> str:
+    """Форматирует транскрибацию с таймкодами из сегментов Whisper."""
+    if not segments:
+        return ""
+    
+    formatted_parts = []
+    for segment in segments:
+        start_time = segment.get("start", 0)
+        end_time = segment.get("end", 0)
+        text = segment.get("text", "").strip()
+        
+        if text:
+            time_str = f"[{format_time(start_time)} → {format_time(end_time)}]"
+            formatted_parts.append(f"{time_str} {text}")
+    
+    return "\n".join(formatted_parts)
+
 
 def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
     """Разбивает длинное сообщение на части, не превышающие лимит."""
@@ -263,11 +297,27 @@ async def transcribe_handler(message: types.Message) -> None:
         return
 
     try:
-        # Скачиваем файл
+        # Получаем информацию о файле
         file_info = await message.bot.get_file(file_id)
 
         if not file_info.file_path:
             await safe_edit_text(status_msg, "❌ <b>Не удалось получить путь к файлу.</b>", parse_mode="HTML")
+            return
+
+        # Проверяем размер файла
+        file_size = getattr(file_info, 'file_size', None)
+        if file_size and file_size > MAX_FILE_SIZE:
+            file_size_mb = file_size / (1024 * 1024)
+            max_size_mb = MAX_FILE_SIZE / (1024 * 1024)
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Файл слишком большой</b>\n\n"
+                f"📊 <b>Размер файла:</b> {file_size_mb:.1f} MB\n"
+                f"📏 <b>Максимальный размер:</b> {max_size_mb:.0f} MB\n\n"
+                f"💡 Попробуйте отправить файл меньшего размера или разделите его на части.",
+                parse_mode="HTML",
+            )
+            logger.warning(f"Файл слишком большой: {file_size_mb:.1f} MB (максимум: {max_size_mb:.0f} MB)")
             return
 
         # Создаем временную директорию для работы
@@ -276,8 +326,23 @@ async def transcribe_handler(message: types.Message) -> None:
 
             # Скачиваем файл
             await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
-            await message.bot.download_file(file_info.file_path, temp_file_path)
-            logger.info(f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}")
+            try:
+                await message.bot.download_file(file_info.file_path, temp_file_path)
+                logger.info(f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}, размер: {file_size / (1024 * 1024):.1f} MB" if file_size else f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}")
+            except TelegramBadRequest as download_error:
+                error_str = str(download_error).lower()
+                if "file is too big" in error_str:
+                    await safe_edit_text(
+                        status_msg,
+                        f"❌ <b>Файл слишком большой для загрузки</b>\n\n"
+                        f"📏 <b>Максимальный размер:</b> {MAX_FILE_SIZE / (1024 * 1024):.0f} MB\n\n"
+                        f"💡 Telegram не позволяет загрузить файл такого размера.\n"
+                        f"Попробуйте отправить файл меньшего размера.",
+                        parse_mode="HTML",
+                    )
+                    logger.error(f"Ошибка при загрузке файла: {download_error}")
+                    return
+                raise
 
             # Запускаем транскрибацию в отдельном потоке
             await safe_edit_text(
@@ -287,25 +352,55 @@ async def transcribe_handler(message: types.Message) -> None:
                 parse_mode="HTML",
             )
 
-            transcribed_text = await transcribe_audio(
+            transcription_result = await transcribe_audio(
                 file_path=temp_file_path,
                 model="medium",
                 language="Russian",
                 device=settings.transcribe.DEVICE,
             )
 
-            if transcribed_text:
+            if transcription_result and transcription_result.get("text"):
                 await safe_delete(status_msg)
+                
+                # Форматируем текст с таймкодами
+                segments = transcription_result.get("segments", [])
+                if segments:
+                    formatted_text = format_transcription_with_timestamps(segments)
+                else:
+                    # Если сегментов нет, используем просто текст
+                    formatted_text = transcription_result["text"]
+                
                 await safe_answer(
                     message,
                     f"✅ <b>Транскрибация завершена</b>\n\n"
-                    f"📝 <b>Текст:</b>\n{transcribed_text}",
+                    f"📝 <b>Текст с таймкодами:</b>\n\n"
+                    f"<pre>{formatted_text}</pre>",
                     parse_mode="HTML",
                 )
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
 
+    except TelegramBadRequest as e:
+        error_str = str(e).lower()
+        if "file is too big" in error_str:
+            logger.error(f"Файл слишком большой: {e}")
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Файл слишком большой</b>\n\n"
+                f"📏 <b>Максимальный размер:</b> {MAX_FILE_SIZE / (1024 * 1024):.0f} MB\n\n"
+                f"💡 Telegram не позволяет обработать файл такого размера.\n"
+                f"Попробуйте отправить файл меньшего размера.",
+                parse_mode="HTML",
+            )
+        else:
+            logger.error(f"Ошибка Telegram API при обработке файла: {e}")
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Произошла ошибка при транскрибации</b>\n\n"
+                f"<code>{str(e)}</code>",
+                parse_mode="HTML",
+            )
     except Exception as e:
         logger.error(f"Ошибка при обработке файла: {e}")
         await safe_edit_text(

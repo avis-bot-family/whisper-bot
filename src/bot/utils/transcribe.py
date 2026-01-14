@@ -10,8 +10,13 @@ def _transcribe_audio_sync(
     model: str = "medium",
     language: str = "Russian",
     device: str = "cpu",
-) -> str:
-    """Синхронная версия транскрибации для использования в отдельном потоке."""
+) -> dict:
+    """Синхронная версия транскрибации для использования в отдельном потоке.
+
+    Возвращает словарь с ключами:
+    - "text": полный текст транскрибации
+    - "segments": список сегментов с таймкодами
+    """
     try:
         logger.info(f"Начинаю транскрибацию файла: {file_path}")
         logger.info(f"Модель: {model}, Язык: {language}, Устройство: {device}")
@@ -34,7 +39,8 @@ def _transcribe_audio_sync(
         )
 
         transcribed_text = result["text"].strip()
-        logger.info("Транскрибация завершена успешно")
+        segments = result.get("segments", [])
+        logger.info(f"Транскрибация завершена успешно. Сегментов: {len(segments)}")
 
         # Очистка памяти после транскрибации
         if device == "cuda" and torch.cuda.is_available():
@@ -42,7 +48,10 @@ def _transcribe_audio_sync(
             del model_obj
             torch.cuda.empty_cache()
 
-        return transcribed_text
+        return {
+            "text": transcribed_text,
+            "segments": segments,
+        }
     except Exception as e:
         logger.error(f"Ошибка при транскрибации: {e}")
         # Очистка памяти в случае ошибки
@@ -56,8 +65,13 @@ async def transcribe_audio(
     model: str = "medium",
     language: str = "Russian",
     device: str = "cpu",
-) -> str:
-    """Запускает транскрибацию аудио файла через whisper в отдельном потоке."""
+) -> dict:
+    """Запускает транскрибацию аудио файла через whisper в отдельном потоке.
+
+    Возвращает словарь с ключами:
+    - "text": полный текст транскрибации
+    - "segments": список сегментов с таймкодами
+    """
     return await asyncio.to_thread(
         _transcribe_audio_sync,
         file_path,

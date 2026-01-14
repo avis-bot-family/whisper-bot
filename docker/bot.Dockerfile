@@ -13,11 +13,8 @@ ENV PYTHONPATH=$SRC_DIR \
     PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1
 
-# Установка системных зависимостей для сборки пакетов
+# Установка системных зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    llvm \
-    llvm-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,7 +25,18 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir poetry==$POETRY_VERSION
 
 COPY pyproject.toml pyproject.toml
-RUN poetry install --no-root --only main
+
+# Создаем виртуальное окружение
+RUN poetry env use python3
+
+# Устанавливаем llvmlite через pip с предкомпилированными wheels
+# Это избегает необходимости компиляции из исходников с LLVM
+# Устанавливаем в виртуальное окружение poetry
+RUN poetry run pip install --no-cache-dir llvmlite
+
+# Устанавливаем остальные зависимости через poetry
+# Poetry должен использовать уже установленный llvmlite
+RUN poetry install --no-root --only main --no-interaction
 
 # Копирования кода приложения
 COPY ./src/bot $APP_DIR

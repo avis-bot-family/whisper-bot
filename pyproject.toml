@@ -12,6 +12,7 @@ loguru = ">=0.7.3,<0.8.0"
 orjson = ">=3.11.4,<4.0.0"
 aiogram = "3.19"
 openai-whisper = "20250625"
+torch = "*"
 flake8-pyproject = "^1.2.4"
 
 

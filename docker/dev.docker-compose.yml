@@ -1,0 +1,22 @@
+services:
+  ping-pong-bot:
+    build:
+      context: ../
+      dockerfile: docker/bot.Dockerfile
+    container_name: ping-pong-bot
+    restart: unless-stopped
+    env_file: ../.docker.env
+    ports:
+      - ${DOCKER_BOT_PORT:-8081}:8081
+    command: poetry run python3 ./bot/main.py
+    volumes:
+      - ../src/bot:/opt/bot
+    networks:
+      - ping-pong-network
+
+networks:
+  ping-pong-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

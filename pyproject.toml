@@ -1,0 +1,43 @@
+[tool.poetry]
+name = "ping-pong-bot"
+version = "0.1.0"
+description = ""
+authors = ["Your name <Your address email (you@example.com)>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+pydantic-settings = ">=2.12.0,<3.0.0"
+loguru = ">=0.7.3,<0.8.0"
+orjson = ">=3.11.4,<4.0.0"
+aiogram = "3.19"
+openai-whisper = "20250625"
+flake8-pyproject = "^1.2.4"
+
+
+[tool.black]
+line-length = 120
+skip-string-normalization = true
+
+[tool.flake8]
+count = true
+max-line-length = 120
+max-complexity = 10
+exclude = [".git", "__pycache__", ".mypy_cache", ".venv", "src/migrations/*.py"]
+per-file-ignores = [
+    "src/*/__init__.py, bot/*/__init__.py: F401", # module imported but unused
+]
+ignore = [
+    "S104", # Possible binding to all interfaces.
+    "F403", # 'from module import *' used; unable to detect undefined names
+    "W503", # line break occurred before a binary operator
+    "C901", # function is too complex
+]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

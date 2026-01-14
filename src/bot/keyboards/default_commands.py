@@ -1,0 +1,27 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+from aiogram.types import BotCommand, BotCommandScopeDefault
+
+if TYPE_CHECKING:
+    from aiogram import Bot
+
+users_commands = {
+    "start": "🚀 Начать работу с ботом",
+    "help": "ℹ️ Справка и информация о боте",
+    "transcribe": "🎙️ Транскрибация аудио/видео",
+}
+
+
+async def set_default_commands(bot: Bot) -> None:
+    await remove_default_commands(bot)
+
+    for command, description in users_commands.items():
+        await bot.set_my_commands(
+            [BotCommand(command=command, description=description)],
+            scope=BotCommandScopeDefault(),
+        )
+
+
+async def remove_default_commands(bot: Bot) -> None:
+    await bot.delete_my_commands(scope=BotCommandScopeDefault())

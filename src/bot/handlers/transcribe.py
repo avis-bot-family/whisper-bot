@@ -8,6 +8,7 @@ from loguru import logger
 
 from bot.enums.file_formats import AudioFormat, FileType, VideoFormat
 from bot.settings import Settings
+from bot.utils.download import download_file_with_progress, FileDownloadError
 from bot.utils.transcribe import transcribe_audio
 
 settings = Settings()
@@ -39,17 +40,17 @@ def format_transcription_with_timestamps(segments: list[dict]) -> str:
     """Форматирует транскрибацию с таймкодами из сегментов Whisper."""
     if not segments:
         return ""
-    
+
     formatted_parts = []
     for segment in segments:
         start_time = segment.get("start", 0)
         end_time = segment.get("end", 0)
         text = segment.get("text", "").strip()
-        
+
         if text:
             time_str = f"[{format_time(start_time)} → {format_time(end_time)}]"
             formatted_parts.append(f"{time_str} {text}")
-    
+
     return "\n".join(formatted_parts)
 
 
@@ -57,13 +58,13 @@ def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[
     """Разбивает длинное сообщение на части, не превышающие лимит."""
     if len(text) <= max_length:
         return [text]
-    
+
     parts = []
     current_part = ""
-    
+
     # Разбиваем по строкам, чтобы не разрывать слова
     lines = text.split("\n")
-    
+
     for line in lines:
         # Если одна строка слишком длинная, разбиваем её по словам
         if len(line) > max_length:
@@ -81,10 +82,10 @@ def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[
                     parts.append(current_part.strip())
                     current_part = ""
             current_part += line + "\n"
-    
+
     if current_part:
         parts.append(current_part.strip())
-    
+
     return parts
 
 
@@ -120,7 +121,7 @@ async def safe_delete(message: types.Message) -> bool:
 
 async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML") -> types.Message | None:
     """Безопасно отправляет ответное сообщение с обработкой ошибок.
-    
+
     Автоматически разбивает длинные сообщения на части, если они превышают лимит Telegram.
     """
     try:
@@ -232,7 +233,7 @@ def is_audio_format(filename: str | None) -> bool:
 async def transcribe_handler(message: types.Message) -> None:
     """Обработчик транскрибации голосовых сообщений, аудио и видео файлов."""
     status_msg = await safe_answer(message, "⏳ <b>Начинаю транскрибацию...</b>", parse_mode="HTML")
-    
+
     if not status_msg:
         logger.error("Не удалось отправить начальное статусное сообщение")
         return
@@ -324,12 +325,22 @@ async def transcribe_handler(message: types.Message) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_file_path = os.path.join(temp_dir, file_name)
 
-            # Скачиваем файл
+            # Скачиваем файл с использованием оптимизированного модуля
             await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
             try:
-                await message.bot.download_file(file_info.file_path, temp_file_path)
-                logger.info(f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}, размер: {file_size / (1024 * 1024):.1f} MB" if file_size else f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}")
-            except TelegramBadRequest as download_error:
+                await download_file_with_progress(
+                    bot=message.bot,
+                    file_info=file_info,
+                    destination_path=temp_file_path,
+                    status_message=status_msg,
+                    update_status_func=safe_edit_text,
+                )
+                logger.info(
+                    f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}, размер: {file_size / (1024 * 1024):.1f} MB"
+                    if file_size
+                    else f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}"
+                )
+            except (TelegramBadRequest, FileDownloadError) as download_error:
                 error_str = str(download_error).lower()
                 if "file is too big" in error_str:
                     await safe_edit_text(
@@ -344,11 +355,12 @@ async def transcribe_handler(message: types.Message) -> None:
                     return
                 raise
 
+            return None
+
             # Запускаем транскрибацию в отдельном потоке
             await safe_edit_text(
                 status_msg,
-                "🔄 <b>Обрабатываю аудио...</b>\n"
-                "⏱ Это может занять некоторое время",
+                "🔄 <b>Обрабатываю аудио...</b>\n" "⏱ Это может занять некоторое время",
                 parse_mode="HTML",
             )
 
@@ -361,7 +373,7 @@ async def transcribe_handler(message: types.Message) -> None:
 
             if transcription_result and transcription_result.get("text"):
                 await safe_delete(status_msg)
-                
+
                 # Форматируем текст с таймкодами
                 segments = transcription_result.get("segments", [])
                 if segments:
@@ -369,7 +381,7 @@ async def transcribe_handler(message: types.Message) -> None:
                 else:
                     # Если сегментов нет, используем просто текст
                     formatted_text = transcription_result["text"]
-                
+
                 await safe_answer(
                     message,
                     f"✅ <b>Транскрибация завершена</b>\n\n"
@@ -397,15 +409,13 @@ async def transcribe_handler(message: types.Message) -> None:
             logger.error(f"Ошибка Telegram API при обработке файла: {e}")
             await safe_edit_text(
                 status_msg,
-                f"❌ <b>Произошла ошибка при транскрибации</b>\n\n"
-                f"<code>{str(e)}</code>",
+                f"❌ <b>Произошла ошибка при транскрибации</b>\n\n" f"<code>{str(e)}</code>",
                 parse_mode="HTML",
             )
     except Exception as e:
         logger.error(f"Ошибка при обработке файла: {e}")
         await safe_edit_text(
             status_msg,
-            f"❌ <b>Произошла ошибка при транскрибации</b>\n\n"
-            f"<code>{str(e)}</code>",
+            f"❌ <b>Произошла ошибка при транскрибации</b>\n\n" f"<code>{str(e)}</code>",
             parse_mode="HTML",
         )

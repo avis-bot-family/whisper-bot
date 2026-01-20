@@ -280,30 +280,36 @@ async def transcribe_handler(message: types.Message) -> None:
     file_id: str | None = None
     file_name: str | None = None
     file_type: FileType | None = None
+    file_size: int | None = None
 
     if message.voice:
         file_id = message.voice.file_id
         file_type = FileType.VOICE
         file_name = f"voice_{file_id}.{get_file_extension(FileType.VOICE)}"
+        file_size = getattr(message.voice, "file_size", None)
     elif message.audio:
         file_id = message.audio.file_id
         file_type = FileType.AUDIO
         original_name = message.audio.file_name
         ext = get_file_extension(FileType.AUDIO, original_name)
         file_name = original_name or f"audio_{file_id}.{ext}"
+        file_size = getattr(message.audio, "file_size", None)
     elif message.video:
         file_id = message.video.file_id
         file_type = FileType.VIDEO
         original_name = message.video.file_name
         ext = get_file_extension(FileType.VIDEO, original_name)
         file_name = original_name or f"video_{file_id}.{ext}"
+        file_size = getattr(message.video, "file_size", None)
     elif message.video_note:
         file_id = message.video_note.file_id
         file_type = FileType.VIDEO_NOTE
         file_name = f"video_note_{file_id}.{get_file_extension(FileType.VIDEO_NOTE)}"
+        file_size = getattr(message.video_note, "file_size", None)
     elif message.document:
         # Обрабатываем документы, которые могут быть видео или аудио файлами
         original_name = message.document.file_name
+        file_size = getattr(message.document, "file_size", None)
         if is_video_format(original_name):
             file_id = message.document.file_id
             file_type = FileType.VIDEO
@@ -332,15 +338,31 @@ async def transcribe_handler(message: types.Message) -> None:
         return
 
     try:
-        # Получаем информацию о файле
-        file_info = await message.bot.get_file(file_id)
+        # Получаем информацию о файле (getFile). По доке: File потом качаем по
+        # https://api.telegram.org/file/bot<token>/<file_path>. getFile не работает для >20 MB.
+        try:
+            file_info = await message.bot.get_file(file_id)
+        except TelegramBadRequest as e:
+            if "file is too big" in str(e).lower():
+                size_mb = (file_size or 0) / (1024 * 1024)
+                await safe_edit_text(
+                    status_msg,
+                    "❌ <b>Файл слишком большой для getFile (Bot API)</b>\n\n"
+                    f"📊 <b>Размер:</b> {size_mb:.1f} MB\n"
+                    "📏 <b>Лимит getFile:</b> 20 MB\n\n"
+                    "💡 Telegram Bot API не отдаёт <code>file_path</code> для файлов >20 MB. "
+                    "Отправьте файл до 20 MB.",
+                    parse_mode="HTML",
+                )
+                return
+            raise
 
         if not file_info.file_path:
             await safe_edit_text(status_msg, "❌ <b>Не удалось получить путь к файлу.</b>", parse_mode="HTML")
             return
 
-        # Проверяем размер файла
-        file_size = getattr(file_info, 'file_size', None)
+        # Проверяем размер файла (из file_info или из сообщения)
+        file_size = getattr(file_info, "file_size", None) or file_size
         if file_size and file_size > MAX_FILE_SIZE:
             file_size_mb = file_size / (1024 * 1024)
             max_size_mb = MAX_FILE_SIZE / (1024 * 1024)

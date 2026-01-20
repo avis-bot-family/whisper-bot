@@ -355,8 +355,6 @@ async def transcribe_handler(message: types.Message) -> None:
                     return
                 raise
 
-            return None
-
             # Запускаем транскрибацию в отдельном потоке
             await safe_edit_text(
                 status_msg,

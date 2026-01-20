@@ -1,4 +1,7 @@
+import asyncio
+import html
 import os
+import re
 import tempfile
 
 from aiogram import F, Router, types
@@ -89,17 +92,49 @@ def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[
     return parts
 
 
+def _parse_retry_after(error: Exception) -> float | None:
+    """Извлекает время ожидания (в секундах) из ошибки Flood / retry after."""
+    m = re.search(r"(?:retry in |retry after )(\d+)", str(error), re.I)
+    return float(m.group(1)) + 0.5 if m else None
+
+
 async def safe_edit_text(message: types.Message, text: str, parse_mode: str = "HTML") -> bool:
-    """Безопасно редактирует текст сообщения с обработкой ошибок."""
+    """Безопасно редактирует текст сообщения с обработкой ошибок.
+    При Flood control / Too Many Requests выполняет одну повторную попытку после задержки.
+    """
     try:
         await message.edit_text(text, parse_mode=parse_mode)
         return True
     except TelegramBadRequest as e:
-        if "message to edit not found" in str(e).lower() or "message is not modified" in str(e).lower():
+        err = str(e).lower()
+        if "message to edit not found" in err or "message is not modified" in err:
             logger.warning(f"Не удалось отредактировать сообщение: {e}")
             return False
+        if "flood" in err or "retry after" in err or "too many requests" in err:
+            sec = _parse_retry_after(e)
+            if sec and sec > 0:
+                logger.warning(f"Flood control, жду {sec:.1f} с перед повтором: {e}")
+                await asyncio.sleep(sec)
+                try:
+                    await message.edit_text(text, parse_mode=parse_mode)
+                    return True
+                except Exception as retry_e:
+                    logger.error(f"Повтор после flood не удался: {retry_e}")
+                    return False
         raise
     except Exception as e:
+        err = str(e).lower()
+        if "flood" in err or "retry after" in err or "too many requests" in err:
+            sec = _parse_retry_after(e)
+            if sec and sec > 0:
+                logger.warning(f"Flood control (через Exception), жду {sec:.1f} с: {e}")
+                await asyncio.sleep(sec)
+                try:
+                    await message.edit_text(text, parse_mode=parse_mode)
+                    return True
+                except Exception as retry_e:
+                    logger.error(f"Повтор после flood не удался: {retry_e}")
+                    return False
         logger.error(f"Ошибка при редактировании сообщения: {e}")
         return False
 
@@ -130,34 +165,33 @@ async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML
         error_str = str(e).lower()
         if "file is too big" in error_str or "message is too long" in error_str:
             logger.warning(f"Сообщение слишком длинное, разбиваю на части: {e}")
-            # Разбиваем сообщение на части
+            # Разбиваем по символам/строкам — разметка HTML при этом может порваться,
+            # поэтому части уходим без parse_mode, чтобы не получить can't parse entities.
             parts = split_long_message(text, MAX_MESSAGE_LENGTH)
+            part_parse_mode: str | None = None
             last_msg = None
             for i, part in enumerate(parts):
                 try:
                     if i == 0:
-                        # Первая часть отправляется как новое сообщение
-                        last_msg = await message.answer(part, parse_mode=parse_mode)
+                        last_msg = await message.answer(part, parse_mode=part_parse_mode)
                     else:
-                        # Остальные части отправляются как ответы на предыдущее сообщение
                         if last_msg:
-                            last_msg = await last_msg.answer(part, parse_mode=parse_mode)
+                            last_msg = await last_msg.answer(part, parse_mode=part_parse_mode)
                         else:
-                            last_msg = await message.answer(part, parse_mode=parse_mode)
+                            last_msg = await message.answer(part, parse_mode=part_parse_mode)
                 except TelegramBadRequest as part_error:
                     error_part_str = str(part_error).lower()
                     if "message is too long" in error_part_str:
-                        # Если часть все еще слишком длинная, разбиваем её еще больше
                         logger.warning(f"Часть {i+1} все еще слишком длинная, разбиваю дальше: {part_error}")
                         smaller_parts = split_long_message(part, MAX_MESSAGE_LENGTH // 2)
                         for j, smaller_part in enumerate(smaller_parts):
                             try:
                                 if i == 0 and j == 0:
-                                    last_msg = await message.answer(smaller_part, parse_mode=parse_mode)
+                                    last_msg = await message.answer(smaller_part, parse_mode=part_parse_mode)
                                 elif last_msg:
-                                    last_msg = await last_msg.answer(smaller_part, parse_mode=parse_mode)
+                                    last_msg = await last_msg.answer(smaller_part, parse_mode=part_parse_mode)
                                 else:
-                                    last_msg = await message.answer(smaller_part, parse_mode=parse_mode)
+                                    last_msg = await message.answer(smaller_part, parse_mode=part_parse_mode)
                             except Exception as smaller_error:
                                 logger.error(f"Ошибка при отправке подчасти {j+1} части {i+1}: {smaller_error}")
                     else:
@@ -355,6 +389,15 @@ async def transcribe_handler(message: types.Message) -> None:
                     return
                 raise
 
+            # Проверка на пустой файл (0 байт)
+            if os.path.getsize(temp_file_path) == 0:
+                await safe_edit_text(
+                    status_msg,
+                    "⚠️ <b>Файл пустой или слишком короткий.</b>",
+                    parse_mode="HTML",
+                )
+                return
+
             # Запускаем транскрибацию в отдельном потоке
             await safe_edit_text(
                 status_msg,
@@ -377,16 +420,35 @@ async def transcribe_handler(message: types.Message) -> None:
                 if segments:
                     formatted_text = format_transcription_with_timestamps(segments)
                 else:
-                    # Если сегментов нет, используем просто текст
                     formatted_text = transcription_result["text"]
 
-                await safe_answer(
-                    message,
-                    f"✅ <b>Транскрибация завершена</b>\n\n"
-                    f"📝 <b>Текст с таймкодами:</b>\n\n"
-                    f"<pre>{formatted_text}</pre>",
-                    parse_mode="HTML",
-                )
+                # Разбиваем только содержимое, каждую часть оборачиваем в валидный <pre>,
+                # чтобы при длинной транскрипции не резать теги и не получать can't parse entities.
+                PRE_MAX = 3300
+                parts = split_long_message(formatted_text, PRE_MAX)
+                header_done = "✅ <b>Транскрибация завершена</b>\n\n📝 <b>Текст с таймкодами"
+                header_cont = "📝 <b>Текст с таймкодами"
+                last_msg = None
+                for i, part in enumerate(parts):
+                    safe_part = html.escape(part)
+                    if len(parts) == 1:
+                        title = header_done + ":</b>\n\n"
+                    else:
+                        title = (header_done if i == 0 else header_cont) + f" ({i+1}/{len(parts)}):</b>\n\n"
+                    text = title + "<pre>" + safe_part + "</pre>"
+                    if i == 0:
+                        last_msg = await safe_answer(message, text, parse_mode="HTML")
+                    else:
+                        if last_msg and message.bot:
+                            try:
+                                last_msg = await message.bot.send_message(
+                                    chat_id=message.chat.id,
+                                    text=text,
+                                    reply_to_message_id=last_msg.message_id,
+                                    parse_mode="HTML",
+                                )
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки части {i+1}/{len(parts)}: {e}")
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")

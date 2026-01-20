@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from collections.abc import Awaitable
 from typing import Callable, Optional
 
@@ -76,9 +77,7 @@ async def download_file_optimized(
                 async with session.get(file_url) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        raise FileDownloadError(
-                            f"Ошибка при скачивании файла: HTTP {response.status} - {error_text}"
-                        )
+                        raise FileDownloadError(f"Ошибка при скачивании файла: HTTP {response.status} - {error_text}")
 
                     # Получаем размер файла из заголовков, если не указан в file_info
                     content_length = response.headers.get("Content-Length")
@@ -121,13 +120,9 @@ async def download_file_optimized(
 
                     # Проверяем, что файл скачан полностью
                     if total_size and downloaded != total_size:
-                        raise FileDownloadError(
-                            f"Файл скачан не полностью: {downloaded} байт из {total_size}"
-                        )
+                        raise FileDownloadError(f"Файл скачан не полностью: {downloaded} байт из {total_size}")
 
-                    logger.info(
-                        f"Файл успешно скачан: {destination_path}, размер: {downloaded / (1024 * 1024):.1f} MB"
-                    )
+                    logger.info(f"Файл успешно скачан: {destination_path}, размер: {downloaded / (1024 * 1024):.1f} MB")
                     return destination_path
 
         except aiohttp.ClientError as e:
@@ -189,27 +184,34 @@ async def download_file_with_progress(
         Путь к скачанному файлу
     """
     last_progress_percent = -1
+    last_update_time = 0.0
 
     async def async_progress_callback(downloaded: int, total: int) -> None:
-        """Асинхронный callback для обновления прогресса скачивания."""
-        nonlocal last_progress_percent
-        if status_message and update_status_func and total:
-            progress_percent = (downloaded / total) * 100
+        """Асинхронный callback для обновления прогресса скачивания.
+        Throttle: не чаще 1 раза в 2 с и не чаще чем каждые 10% — чтобы не упираться в Flood control.
+        """
+        nonlocal last_progress_percent, last_update_time
+        if not (status_message and update_status_func and total):
+            return
+        progress_percent = (downloaded / total) * 100
+        now = time.monotonic()
+        # Обновляем при приросте ≥10% или при 100%, и не чаще чем раз в 2 секунды
+        pct_ok = progress_percent - last_progress_percent >= 10 or progress_percent >= 99.9
+        time_ok = last_update_time == 0 or (now - last_update_time) >= 2.0
+        if pct_ok and time_ok:
             downloaded_mb = downloaded / (1024 * 1024)
             total_mb = total / (1024 * 1024)
-
-            # Обновляем статус каждые 5% для избежания спама
-            if progress_percent - last_progress_percent >= 5:
-                status_text = (
-                    f"📥 <b>Скачиваю файл...</b>\n\n"
-                    f"📊 <b>Прогресс:</b> {progress_percent:.1f}%\n"
-                    f"💾 {downloaded_mb:.1f} MB / {total_mb:.1f} MB"
-                )
-                try:
-                    await update_status_func(status_message, status_text)
-                    last_progress_percent = progress_percent
-                except Exception as e:
-                    logger.debug(f"Не удалось обновить статус: {e}")
+            status_text = (
+                f"📥 <b>Скачиваю файл...</b>\n\n"
+                f"📊 <b>Прогресс:</b> {progress_percent:.1f}%\n"
+                f"💾 {downloaded_mb:.1f} MB / {total_mb:.1f} MB"
+            )
+            try:
+                await update_status_func(status_message, status_text)
+                last_progress_percent = progress_percent
+                last_update_time = now
+            except Exception as e:
+                logger.debug(f"Не удалось обновить статус: {e}")
 
     return await download_file_optimized(
         bot=bot,

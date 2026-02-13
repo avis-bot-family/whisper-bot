@@ -5,6 +5,7 @@ import re
 import tempfile
 
 from aiogram import F, Router, types
+from aiogram.types import FSInputFile
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command
 from loguru import logger
@@ -217,34 +218,39 @@ class GoogleDriveLinkFilter(BaseFilter):
         return extract_google_drive_file_id((message.text or "").strip()) is not None
 
 
-async def send_transcription_parts(
+async def send_transcription_result(
     message: types.Message,
     formatted_text: str,
     pre_max: int = PRE_MAX,
 ) -> None:
-    """Отправляет транскрипцию частями с HTML-разметкой."""
-    parts = split_long_message(formatted_text, pre_max)
-    header_done = "✅ <b>Транскрибация завершена</b>\n\n📝 <b>Текст с таймкодами"
-    header_cont = "📝 <b>Текст с таймкодами"
-    last_msg = None
-    for i, part in enumerate(parts):
-        safe_part = html.escape(part)
-        title = (header_done if i == 0 else header_cont) + (
-            f" ({i + 1}/{len(parts)}):</b>\n\n" if len(parts) > 1 else ":</b>\n\n"
+    """Отправляет транскрипцию: сообщением если помещается, иначе .txt файлом."""
+    if len(formatted_text) <= pre_max:
+        safe_part = html.escape(formatted_text)
+        text_out = (
+            "✅ <b>Транскрибация завершена</b>\n\n"
+            "📝 <b>Текст с таймкодами:</b>\n\n"
+            f"<pre>{safe_part}</pre>"
         )
-        text_out = title + "<pre>" + safe_part + "</pre>"
-        if i == 0:
-            last_msg = await safe_answer(message, text_out, parse_mode="HTML")
-        elif last_msg and message.bot:
+        await safe_answer(message, text_out, parse_mode="HTML")
+    else:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".txt",
+            delete=False,
+            encoding="utf-8",
+        ) as f:
+            f.write(formatted_text)
+            temp_path = f.name
+        try:
+            await message.answer_document(
+                FSInputFile(temp_path, filename="transcription.txt"),
+                caption="✅ Транскрибация завершена\n📝 Текст с таймкодами",
+            )
+        finally:
             try:
-                last_msg = await message.bot.send_message(
-                    chat_id=message.chat.id,
-                    text=text_out,
-                    reply_to_message_id=last_msg.message_id,
-                    parse_mode="HTML",
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки части {i + 1}/{len(parts)}: {e}")
+                os.unlink(temp_path)
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный файл {temp_path}: {e}")
 
 
 def get_file_extension(file_type: FileType, original_filename: str | None = None) -> str:
@@ -370,7 +376,7 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                     if segments
                     else transcription_result["text"]
                 )
-                await send_transcription_parts(message, formatted_text)
+                await send_transcription_result(message, formatted_text)
                 logger.info("Транскрибация по ссылке Google Drive завершена")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
@@ -583,7 +589,7 @@ async def transcribe_handler(message: types.Message) -> None:
                     if segments
                     else transcription_result["text"]
                 )
-                await send_transcription_parts(message, formatted_text)
+                await send_transcription_result(message, formatted_text)
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")

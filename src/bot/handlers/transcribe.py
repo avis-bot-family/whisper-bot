@@ -6,12 +6,13 @@ import tempfile
 
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import BaseFilter, Command
 from loguru import logger
 
 from bot.enums.file_formats import AudioFormat, FileType, VideoFormat
 from bot.settings import Settings
 from bot.utils.download import download_file_with_progress, FileDownloadError
+from bot.utils.google_drive import download_from_google_drive, extract_google_drive_file_id
 from bot.utils.transcribe import transcribe_audio
 
 settings = Settings()
@@ -26,6 +27,9 @@ MAX_MESSAGE_LENGTH = 3500
 # 500 MB - разумный лимит для обработки
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
+# Максимальная длина части транскрипции с учётом HTML-обёртки <pre>...</pre>
+PRE_MAX = 3300
+
 
 def format_time(seconds: float) -> str:
     """Форматирует время в секундах в формат MM:SS или HH:MM:SS."""
@@ -35,8 +39,7 @@ def format_time(seconds: float) -> str:
 
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    else:
-        return f"{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def format_transcription_with_timestamps(segments: list[dict]) -> str:
@@ -182,7 +185,7 @@ async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML
                 except TelegramBadRequest as part_error:
                     error_part_str = str(part_error).lower()
                     if "message is too long" in error_part_str:
-                        logger.warning(f"Часть {i+1} все еще слишком длинная, разбиваю дальше: {part_error}")
+                        logger.warning(f"Часть {i + 1} все еще слишком длинная, разбиваю дальше: {part_error}")
                         smaller_parts = split_long_message(part, MAX_MESSAGE_LENGTH // 2)
                         for j, smaller_part in enumerate(smaller_parts):
                             try:
@@ -193,16 +196,55 @@ async def safe_answer(message: types.Message, text: str, parse_mode: str = "HTML
                                 else:
                                     last_msg = await message.answer(smaller_part, parse_mode=part_parse_mode)
                             except Exception as smaller_error:
-                                logger.error(f"Ошибка при отправке подчасти {j+1} части {i+1}: {smaller_error}")
+                                logger.error(f"Ошибка при отправке подчасти {j + 1} части {i + 1}: {smaller_error}")
                     else:
-                        logger.error(f"Ошибка при отправке части сообщения {i+1}/{len(parts)}: {part_error}")
+                        logger.error(f"Ошибка при отправке части сообщения {i + 1}/{len(parts)}: {part_error}")
                 except Exception as part_error:
-                    logger.error(f"Ошибка при отправке части сообщения {i+1}/{len(parts)}: {part_error}")
+                    logger.error(f"Ошибка при отправке части сообщения {i + 1}/{len(parts)}: {part_error}")
             return last_msg
         raise
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
         return None
+
+
+class GoogleDriveLinkFilter(BaseFilter):
+    """Фильтр: сообщение содержит ссылку на Google Drive."""
+
+    async def __call__(self, message: types.Message) -> bool:
+        if not message.text:
+            return False
+        return extract_google_drive_file_id((message.text or "").strip()) is not None
+
+
+async def send_transcription_parts(
+    message: types.Message,
+    formatted_text: str,
+    pre_max: int = PRE_MAX,
+) -> None:
+    """Отправляет транскрипцию частями с HTML-разметкой."""
+    parts = split_long_message(formatted_text, pre_max)
+    header_done = "✅ <b>Транскрибация завершена</b>\n\n📝 <b>Текст с таймкодами"
+    header_cont = "📝 <b>Текст с таймкодами"
+    last_msg = None
+    for i, part in enumerate(parts):
+        safe_part = html.escape(part)
+        title = (header_done if i == 0 else header_cont) + (
+            f" ({i + 1}/{len(parts)}):</b>\n\n" if len(parts) > 1 else ":</b>\n\n"
+        )
+        text_out = title + "<pre>" + safe_part + "</pre>"
+        if i == 0:
+            last_msg = await safe_answer(message, text_out, parse_mode="HTML")
+        elif last_msg and message.bot:
+            try:
+                last_msg = await message.bot.send_message(
+                    chat_id=message.chat.id,
+                    text=text_out,
+                    reply_to_message_id=last_msg.message_id,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки части {i + 1}/{len(parts)}: {e}")
 
 
 def get_file_extension(file_type: FileType, original_filename: str | None = None) -> str:
@@ -242,9 +284,105 @@ async def transcribe_command_handler(message: types.Message) -> None:
         f"<code>{', '.join([fmt.value.upper() for fmt in AudioFormat])}</code>\n\n"
         "🎬 <b>Поддерживаемые видео форматы:</b>\n"
         f"<code>{', '.join([fmt.value.upper() for fmt in VideoFormat])}</code>\n\n"
-        "💡 Файлы можно отправлять как медиа или документы.",
+        "💡 Файлы можно отправлять как медиа или документы.\n\n"
+        "🔗 Также можно отправить <b>ссылку на аудио/видео в Google Drive</b> (файл должен быть доступен по ссылке).",
         parse_mode="HTML",
     )
+
+
+@router.message(GoogleDriveLinkFilter())
+async def transcribe_google_drive_link_handler(message: types.Message) -> None:
+    """Обработчик транскрибации по ссылке на файл в Google Drive."""
+    text = (message.text or "").strip()
+    gdrive_file_id = extract_google_drive_file_id(text)
+    if not gdrive_file_id:
+        return
+
+    status_msg: types.Message | None = None
+    try:
+        status_msg = await safe_answer(
+            message,
+            "⏳ <b>Начинаю транскрибацию по ссылке Google Drive...</b>",
+            parse_mode="HTML",
+        )
+        if not status_msg:
+            logger.error("Не удалось отправить начальное статусное сообщение")
+            return
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Расширение по умолчанию для аудио; Whisper определит формат по содержимому
+            temp_file_path = os.path.join(temp_dir, f"gdrive_{gdrive_file_id}.mp3")
+
+            await safe_edit_text(status_msg, "📥 <b>Скачиваю файл с Google Drive...</b>", parse_mode="HTML")
+            try:
+                await download_from_google_drive(
+                    file_id=gdrive_file_id,
+                    destination_path=temp_file_path,
+                    status_message=status_msg,
+                    update_status_func=safe_edit_text,
+                )
+            except OSError as e:
+                logger.error(f"Ошибка скачивания с Google Drive: {e}")
+                await safe_edit_text(
+                    status_msg,
+                    f"❌ <b>Не удалось скачать файл с Google Drive</b>\n\n"
+                    f"<code>{html.escape(str(e))}</code>\n\n"
+                    "💡 Убедитесь, что ссылка публичная (доступ «все, у кого есть ссылка»).",
+                    parse_mode="HTML",
+                )
+                return
+
+            if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
+                await safe_edit_text(
+                    status_msg,
+                    "⚠️ <b>Файл пустой или не удалось скачать.</b>",
+                    parse_mode="HTML",
+                )
+                return
+
+            file_size = os.path.getsize(temp_file_path)
+            if file_size > MAX_FILE_SIZE:
+                await safe_edit_text(
+                    status_msg,
+                    f"❌ <b>Файл слишком большой</b>\n\n"
+                    f"📏 Максимальный размер: {MAX_FILE_SIZE / (1024 * 1024):.0f} MB",
+                    parse_mode="HTML",
+                )
+                return
+
+            await safe_edit_text(
+                status_msg,
+                "🔄 <b>Обрабатываю аудио...</b>\n⏱ Это может занять некоторое время",
+                parse_mode="HTML",
+            )
+
+            transcription_result = await transcribe_audio(
+                file_path=temp_file_path,
+                model=settings.transcribe.MODEL,
+                language=settings.transcribe.LANGUAGE,
+                device=settings.transcribe.DEVICE,
+            )
+
+            if transcription_result and transcription_result.get("text"):
+                await safe_delete(status_msg)
+                segments = transcription_result.get("segments", [])
+                formatted_text = (
+                    format_transcription_with_timestamps(segments)
+                    if segments
+                    else transcription_result["text"]
+                )
+                await send_transcription_parts(message, formatted_text)
+                logger.info("Транскрибация по ссылке Google Drive завершена")
+            else:
+                await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Ошибка при транскрибации по ссылке Google Drive: {e}")
+        if status_msg is not None:
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Произошла ошибка</b>\n\n<code>{html.escape(str(e))}</code>",
+                parse_mode="HTML",
+            )
 
 
 def is_video_format(filename: str | None) -> bool:
@@ -391,10 +529,12 @@ async def transcribe_handler(message: types.Message) -> None:
                     status_message=status_msg,
                     update_status_func=safe_edit_text,
                 )
+                size_info = (
+                    f", размер: {file_size / (1024 * 1024):.1f} MB" if file_size else ""
+                )
                 logger.info(
-                    f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}, размер: {file_size / (1024 * 1024):.1f} MB"
-                    if file_size
-                    else f"Файл скачан: {temp_file_path}, тип: {file_type.value if file_type else 'unknown'}"
+                    f"Файл скачан: {temp_file_path}, тип: "
+                    f"{file_type.value if file_type else 'unknown'}{size_info}"
                 )
             except (TelegramBadRequest, FileDownloadError) as download_error:
                 error_str = str(download_error).lower()
@@ -429,48 +569,21 @@ async def transcribe_handler(message: types.Message) -> None:
 
             transcription_result = await transcribe_audio(
                 file_path=temp_file_path,
-                model="medium",
-                language="Russian",
+                model=settings.transcribe.MODEL,
+                language=settings.transcribe.LANGUAGE,
                 device=settings.transcribe.DEVICE,
             )
 
             if transcription_result and transcription_result.get("text"):
                 await safe_delete(status_msg)
 
-                # Форматируем текст с таймкодами
                 segments = transcription_result.get("segments", [])
-                if segments:
-                    formatted_text = format_transcription_with_timestamps(segments)
-                else:
-                    formatted_text = transcription_result["text"]
-
-                # Разбиваем только содержимое, каждую часть оборачиваем в валидный <pre>,
-                # чтобы при длинной транскрипции не резать теги и не получать can't parse entities.
-                PRE_MAX = 3300
-                parts = split_long_message(formatted_text, PRE_MAX)
-                header_done = "✅ <b>Транскрибация завершена</b>\n\n📝 <b>Текст с таймкодами"
-                header_cont = "📝 <b>Текст с таймкодами"
-                last_msg = None
-                for i, part in enumerate(parts):
-                    safe_part = html.escape(part)
-                    if len(parts) == 1:
-                        title = header_done + ":</b>\n\n"
-                    else:
-                        title = (header_done if i == 0 else header_cont) + f" ({i+1}/{len(parts)}):</b>\n\n"
-                    text = title + "<pre>" + safe_part + "</pre>"
-                    if i == 0:
-                        last_msg = await safe_answer(message, text, parse_mode="HTML")
-                    else:
-                        if last_msg and message.bot:
-                            try:
-                                last_msg = await message.bot.send_message(
-                                    chat_id=message.chat.id,
-                                    text=text,
-                                    reply_to_message_id=last_msg.message_id,
-                                    parse_mode="HTML",
-                                )
-                            except Exception as e:
-                                logger.error(f"Ошибка отправки части {i+1}/{len(parts)}: {e}")
+                formatted_text = (
+                    format_transcription_with_timestamps(segments)
+                    if segments
+                    else transcription_result["text"]
+                )
+                await send_transcription_parts(message, formatted_text)
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
@@ -491,13 +604,13 @@ async def transcribe_handler(message: types.Message) -> None:
             logger.error(f"Ошибка Telegram API при обработке файла: {e}")
             await safe_edit_text(
                 status_msg,
-                f"❌ <b>Произошла ошибка при транскрибации</b>\n\n" f"<code>{str(e)}</code>",
+                f"❌ <b>Произошла ошибка при транскрибации</b>\n\n<code>{html.escape(str(e))}</code>",
                 parse_mode="HTML",
             )
     except Exception as e:
         logger.error(f"Ошибка при обработке файла: {e}")
         await safe_edit_text(
             status_msg,
-            f"❌ <b>Произошла ошибка при транскрибации</b>\n\n" f"<code>{str(e)}</code>",
+            f"❌ <b>Произошла ошибка при транскрибации</b>\n\n<code>{html.escape(str(e))}</code>",
             parse_mode="HTML",
         )

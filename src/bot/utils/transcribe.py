@@ -4,6 +4,18 @@ import torch
 import whisper
 from loguru import logger
 
+_model_cache: dict[tuple[str, str], whisper.Whisper] = {}
+
+
+def _get_model(model: str, device: str) -> whisper.Whisper:
+    """Возвращает загруженную модель Whisper (с кэшированием)."""
+    key = (model, device)
+    if key not in _model_cache:
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        _model_cache[key] = whisper.load_model(model, device=device)
+    return _model_cache[key]
+
 
 def _transcribe_audio_sync(
     file_path: str,
@@ -31,7 +43,7 @@ def _transcribe_audio_sync(
             logger.warning("CUDA недоступна, используется CPU")
             device = "cpu"
 
-        model_obj = whisper.load_model(model, device=device)
+        model_obj = _get_model(model, device)
         result = model_obj.transcribe(
             file_path,
             task="transcribe",
@@ -42,10 +54,8 @@ def _transcribe_audio_sync(
         segments = result.get("segments", [])
         logger.info(f"Транскрибация завершена успешно. Сегментов: {len(segments)}")
 
-        # Очистка памяти после транскрибации
+        # Освобождаем неиспользуемую память CUDA (модель остаётся в кэше)
         if device == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            del model_obj
             torch.cuda.empty_cache()
 
         return {

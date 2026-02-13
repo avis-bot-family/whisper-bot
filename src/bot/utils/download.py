@@ -106,8 +106,7 @@ async def download_file_optimized(
                                     if progress_callback:
                                         progress_callback(downloaded, total_size)
                                     if async_progress_callback:
-                                        # Создаем задачу для асинхронного callback
-                                        asyncio.create_task(async_progress_callback(downloaded, total_size))
+                                        await async_progress_callback(downloaded, total_size)
                                     last_progress_update = downloaded
 
                             # Логируем прогресс для больших файлов

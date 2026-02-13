@@ -34,9 +34,9 @@ async def on_startup() -> None:
         None: "Unknown (This's not a bot)",
     }
 
-    logger.info(f"Groups Mode  - {states[bot_info.can_join_groups]}")
-    logger.info(f"Privacy Mode - {states[not bot_info.can_read_all_group_messages]}")
-    logger.info(f"Inline Mode  - {states[bot_info.supports_inline_queries]}")
+    logger.info(f"Groups Mode  - {states.get(bot_info.can_join_groups, states[None])}")
+    logger.info(f"Privacy Mode - {states.get(not bot_info.can_read_all_group_messages, states[None])}")
+    logger.info(f"Inline Mode  - {states.get(bot_info.supports_inline_queries, states[None])}")
 
     if settings.webhook.USE_WEBHOOK:
         logger.info("=" * 50)
@@ -72,7 +72,7 @@ async def run_startup_transcribe() -> None:
     logger.info("=" * 50)
 
     try:
-        transcribed_text = await transcribe_audio(
+        result = await transcribe_audio(
             file_path=audio_file_path,
             model=settings.transcribe.MODEL,
             language=settings.transcribe.LANGUAGE,
@@ -82,7 +82,7 @@ async def run_startup_transcribe() -> None:
         logger.info("=" * 50)
         logger.info("РЕЗУЛЬТАТ ТРАНСКРИБАЦИИ:")
         logger.info("=" * 50)
-        logger.info(transcribed_text)
+        logger.info(result.get("text", str(result)))
         logger.info("=" * 50)
 
     except Exception as e:

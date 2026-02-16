@@ -39,8 +39,12 @@ PRE_MAX = 3300
 async def transcribe_command_handler(message: types.Message, state: FSMContext) -> None:
     """Обработчик команды /transcribe - ожидает аудио или голосовое сообщение."""
     await state.clear()
+    diarize_hint = ""
+    if settings.transcribe.DIARIZE_BY_DEFAULT and settings.transcribe.HF_TOKEN:
+        diarize_hint = "\n👥 <b>По умолчанию включена диаризация спикеров</b>\n\n"
     await message.answer(
         "🎙️ <b>Транскрибация аудио и видео</b>\n\n"
+        f"{diarize_hint}"
         "📤 <b>Отправьте файл одним из способов:</b>\n"
         "• 🎤 Голосовое сообщение\n"
         "• 🎵 Аудио файл\n"
@@ -398,25 +402,42 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                 )
                 return
 
-            await safe_edit_text(
-                status_msg,
-                "🔄 <b>Обрабатываю аудио...</b>\n⏱ Это может занять некоторое время",
-                parse_mode="HTML",
+            use_diarize = (
+                settings.transcribe.DIARIZE_BY_DEFAULT
+                and (settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN"))
             )
+            status_text = (
+                "🔄 <b>Транскрибация и диаризация...</b>\n⏱ Это займёт больше времени"
+                if use_diarize
+                else "🔄 <b>Обрабатываю аудио...</b>\n⏱ Это может занять некоторое время"
+            )
+            await safe_edit_text(status_msg, status_text, parse_mode="HTML")
 
-            transcription_result = await transcribe_audio(
-                file_path=temp_file_path,
-                model=settings.transcribe.MODEL,
-                language=settings.transcribe.LANGUAGE,
-                device=settings.transcribe.DEVICE,
-            )
+            if use_diarize:
+                hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
+                transcription_result = await transcribe_with_diarization(
+                    file_path=temp_file_path,
+                    model=settings.transcribe.MODEL,
+                    language=settings.transcribe.LANGUAGE,
+                    device=settings.transcribe.DEVICE,
+                    hf_token=hf_token,
+                    min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
+                    max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
+                )
+                format_fn = format_transcription_diarized
+            else:
+                transcription_result = await transcribe_audio(
+                    file_path=temp_file_path,
+                    model=settings.transcribe.MODEL,
+                    language=settings.transcribe.LANGUAGE,
+                    device=settings.transcribe.DEVICE,
+                )
+                format_fn = format_transcription_with_timestamps
 
             if transcription_result and transcription_result.get("text"):
                 await safe_delete(status_msg)
                 segments = transcription_result.get("segments", [])
-                formatted_text = (
-                    format_transcription_with_timestamps(segments) if segments else transcription_result["text"]
-                )
+                formatted_text = format_fn(segments) if segments else transcription_result["text"]
                 await send_transcription_result(message, formatted_text)
                 logger.info("Транскрибация по ссылке Google Drive завершена")
             else:
@@ -493,6 +514,8 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
                 language=settings.transcribe.LANGUAGE,
                 device=settings.transcribe.DEVICE,
                 hf_token=hf_token,
+                min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
+                max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
             )
 
             if result and result.get("text"):
@@ -780,27 +803,43 @@ async def transcribe_handler(message: types.Message) -> None:
                 )
                 return
 
-            # Запускаем транскрибацию в отдельном потоке
-            await safe_edit_text(
-                status_msg,
-                "🔄 <b>Обрабатываю аудио...</b>\n" "⏱ Это может занять некоторое время",
-                parse_mode="HTML",
+            use_diarize = (
+                settings.transcribe.DIARIZE_BY_DEFAULT
+                and (settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN"))
             )
+            status_text = (
+                "🔄 <b>Транскрибация и диаризация...</b>\n⏱ Это займёт больше времени"
+                if use_diarize
+                else "🔄 <b>Обрабатываю аудио...</b>\n⏱ Это может занять некоторое время"
+            )
+            await safe_edit_text(status_msg, status_text, parse_mode="HTML")
 
-            transcription_result = await transcribe_audio(
-                file_path=temp_file_path,
-                model=settings.transcribe.MODEL,
-                language=settings.transcribe.LANGUAGE,
-                device=settings.transcribe.DEVICE,
-            )
+            if use_diarize:
+                hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
+                transcription_result = await transcribe_with_diarization(
+                    file_path=temp_file_path,
+                    model=settings.transcribe.MODEL,
+                    language=settings.transcribe.LANGUAGE,
+                    device=settings.transcribe.DEVICE,
+                    hf_token=hf_token,
+                    min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
+                    max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
+                )
+                format_fn = format_transcription_diarized
+            else:
+                transcription_result = await transcribe_audio(
+                    file_path=temp_file_path,
+                    model=settings.transcribe.MODEL,
+                    language=settings.transcribe.LANGUAGE,
+                    device=settings.transcribe.DEVICE,
+                )
+                format_fn = format_transcription_with_timestamps
 
             if transcription_result and transcription_result.get("text"):
                 await safe_delete(status_msg)
 
                 segments = transcription_result.get("segments", [])
-                formatted_text = (
-                    format_transcription_with_timestamps(segments) if segments else transcription_result["text"]
-                )
+                formatted_text = format_fn(segments) if segments else transcription_result["text"]
                 await send_transcription_result(message, formatted_text)
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:

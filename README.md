@@ -40,6 +40,11 @@ transcribe_AUDIO_FILE_PATH=src/bot/audio/privet-druzya.mp3
 transcribe_MODEL=medium
 transcribe_LANGUAGE=Russian
 transcribe_DEVICE=cpu
+# Диаризация (pyannote): HF_TOKEN, DIARIZE_BY_DEFAULT, DIARIZE_MIN/MAX_SPEAKERS
+transcribe_HF_TOKEN=your_huggingface_token
+transcribe_DIARIZE_BY_DEFAULT=true
+transcribe_DIARIZE_MIN_SPEAKERS=2
+transcribe_DIARIZE_MAX_SPEAKERS=5
 ```
 
 ## Запуск

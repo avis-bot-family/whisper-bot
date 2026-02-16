@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 
 from loguru import logger
@@ -120,26 +121,29 @@ def transcribe_with_diarization_sync(
     )
 
     logger.info("Запуск диаризации pyannote.audio...")
-    from pyannote.audio import Pipeline
+    # Подавляем предупреждения torchcodec/FFmpeg и TF32 (аудио загружаем вручную)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        from pyannote.audio import Pipeline
 
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-community-1",
-        token=token,
-    )
-    if device == "cuda" and torch.cuda.is_available():
-        pipeline.to(torch.device("cuda"))
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-community-1",
+            token=token,
+        )
+        if device == "cuda" and torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
 
-    diarization_kwargs: dict[str, Any] = {}
-    if num_speakers is not None:
-        diarization_kwargs["num_speakers"] = num_speakers
-    if min_speakers is not None:
-        diarization_kwargs["min_speakers"] = min_speakers
-    if max_speakers is not None:
-        diarization_kwargs["max_speakers"] = max_speakers
+        diarization_kwargs: dict[str, Any] = {}
+        if num_speakers is not None:
+            diarization_kwargs["num_speakers"] = num_speakers
+        if min_speakers is not None:
+            diarization_kwargs["min_speakers"] = min_speakers
+        if max_speakers is not None:
+            diarization_kwargs["max_speakers"] = max_speakers
 
-    # Загружаем аудио вручную — обход torchcodec/FFmpeg (libavutil.so)
-    audio_input = _load_audio_for_pyannote(file_path)
-    diarization = pipeline(audio_input, **diarization_kwargs)
+        # Загружаем аудио вручную — обход torchcodec/FFmpeg (libavutil.so)
+        audio_input = _load_audio_for_pyannote(file_path)
+        diarization = pipeline(audio_input, **diarization_kwargs)
 
     # pyannote 4.x: speaker_diarization -> (turn, speaker)
     diarization_segments = []

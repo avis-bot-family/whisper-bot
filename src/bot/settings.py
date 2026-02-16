@@ -37,6 +37,9 @@ class TranscribeSettings(BaseSettings):
     LANGUAGE: str = "Russian"
     DEVICE: str = "cpu"  # "cpu" или "cuda"
     HF_TOKEN: str = ""  # HuggingFace токен для диаризации (pyannote)
+    DIARIZE_BY_DEFAULT: bool = True  # диаризация по умолчанию при транскрибации
+    DIARIZE_MIN_SPEAKERS: int = 2
+    DIARIZE_MAX_SPEAKERS: int = 5
 
 
 class LoggerConfig(BaseSettings):

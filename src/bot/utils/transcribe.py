@@ -44,10 +44,13 @@ def _transcribe_audio_sync(
             device = "cpu"
 
         model_obj = _get_model(model, device)
+        # fp16=False на CUDA избегает NaN на некоторых GPU (torch 2.8+)
+        use_fp16 = device != "cuda"
         result = model_obj.transcribe(
             file_path,
             task="transcribe",
             language=language,
+            fp16=use_fp16,
         )
 
         transcribed_text = result["text"].strip()

@@ -2,29 +2,6 @@
 
 Telegram бот для транскрибации голосовых сообщений, аудио и видео файлов с использованием OpenAI Whisper.
 
-# TODO:
-
-1. большое сообщение не отправляется
-- ping-pong-bot  | 2026-01-14 17:35:06.125 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:17 - Модель: medium, Язык: Russian, Устройство: cuda
-ping-pong-bot  | 2026-01-14 17:35:06.126 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:22 - Очищен кеш CUDA
-
-
-ping-pong-bot  | 2026-01-14 17:35:55.074 | INFO     | bot.utils.transcribe:_transcribe_audio_sync:37 - Транскрибация завершена успешно
-ping-pong-bot  | 2026-01-14 17:35:55.151 | ERROR    | bot.handlers.transcribe:safe_answer:53 - Ошибка при отправке сообщения: Telegram server says - Bad Request: message is too long
-ping-pong-bot  | 2026-01-14 17:35:55.151 | INFO     | bot.handlers.transcribe:transcribe_handler:223 - Транскрибация завершена для файла 2025-09-15_11-02-59.mkv
-
-2. большой файл не обрабатывается
-
-ping-pong-bot  | 2026-01-14 17:32:43.158 | ERROR    | bot.handlers.transcribe:transcribe_handler:228 - Ошибка при обработке файла: Telegram server says - Bad Request: file is too big
-
-## Возможности
-
-- 🎙️ Транскрибация голосовых сообщений
-- 🎵 Распознавание речи в аудио файлах
-- 🎬 Извлечение текста из видео
-- 🚀 Поддержка множества форматов (MP3, WAV, MP4, MKV и др.)
-- ⚡ Работа на CPU или GPU (CUDA)
-
 ## Установка
 
 ### Системные требования
@@ -41,16 +18,6 @@ ping-pong-bot  | 2026-01-14 17:32:43.158 | ERROR    | bot.handlers.transcribe:tr
 sudo apt-get update
 sudo apt-get install -y build-essential llvm llvm-dev ffmpeg
 ```
-
-#### macOS
-
-```bash
-brew install llvm ffmpeg
-```
-
-#### Windows
-
-Установите через [LLVM releases](https://github.com/llvm/llvm-project/releases) и добавьте в PATH.
 
 ### Установка зависимостей
 
@@ -69,7 +36,7 @@ poetry install
 ```env
 bot_TOKEN=your_telegram_bot_token
 transcribe_ENABLE_ON_STARTUP=false
-transcribe_AUDIO_FILE_PATH=
+transcribe_AUDIO_FILE_PATH=src/bot/audio/privet-druzya.mp3
 transcribe_MODEL=medium
 transcribe_LANGUAGE=Russian
 transcribe_DEVICE=cpu
@@ -88,6 +55,38 @@ withenv ./.env poetry run python3 ./src/bot/main.py
 ```bash
 docker-compose -f docker/dev.docker-compose.yml up --build
 ```
+
+## Транскрибация локальных файлов
+
+Скрипт для транскрибации аудио/видео без Telegram:
+
+```bash
+# Транскрибация файла по умолчанию (src/bot/audio/privet-druzya.mp3)
+poetry run python src/scripts/transcribe_local.py
+
+# Транскрибация указанного файла
+poetry run python src/scripts/transcribe_local.py path/to/audio.mp3
+
+# С таймкодами по сегментам
+poetry run python src/scripts/transcribe_local.py --timestamps
+
+# Дополнительные опции: --model, --language, --device
+poetry run python src/scripts/transcribe_local.py --help
+```
+
+### Транскрибация с диаризацией спикеров
+
+**В боте:** команда `/transcribe_diarize` — отправьте аудио/видео для транскрибации с определением спикеров.
+
+**Локальный скрипт:**
+```bash
+# Требуется HF_TOKEN в .env (примите условия pyannote)
+poetry run python src/scripts/transcribe_diarize_local.py --diarize path/to/meeting.mp3
+```
+
+Настройка: добавьте в `.env` токен HuggingFace и примите условия модели:
+- `transcribe_HF_TOKEN=ваш_токен`
+- https://huggingface.co/pyannote/speaker-diarization-community-1
 
 ## Использование
 

@@ -7,11 +7,14 @@ import tempfile
 from aiogram import F, Router, types
 from aiogram.types import FSInputFile
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import BaseFilter, Command
+from aiogram.filters import BaseFilter, Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from loguru import logger
 
 from bot.enums.file_formats import AudioFormat, FileType, VideoFormat
 from bot.settings import Settings
+from bot.states import TranscribeDiarizeState
+from bot.utils.diarize import transcribe_with_diarization
 from bot.utils.download import download_file_with_progress, FileDownloadError
 from bot.utils.google_drive import download_from_google_drive, extract_google_drive_file_id
 from bot.utils.transcribe import transcribe_audio
@@ -30,6 +33,51 @@ MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
 # Максимальная длина части транскрипции с учётом HTML-обёртки <pre>...</pre>
 PRE_MAX = 3300
+
+
+@router.message(Command(commands=["transcribe", "транскрибация"]))
+async def transcribe_command_handler(message: types.Message, state: FSMContext) -> None:
+    """Обработчик команды /transcribe - ожидает аудио или голосовое сообщение."""
+    await state.clear()
+    await message.answer(
+        "🎙️ <b>Транскрибация аудио и видео</b>\n\n"
+        "📤 <b>Отправьте файл одним из способов:</b>\n"
+        "• 🎤 Голосовое сообщение\n"
+        "• 🎵 Аудио файл\n"
+        "• 🎬 Видео файл\n"
+        "• 📎 Документ (аудио/видео)\n\n"
+        "🎵 <b>Поддерживаемые аудио форматы:</b>\n"
+        f"<code>{', '.join([fmt.value.upper() for fmt in AudioFormat])}</code>\n\n"
+        "🎬 <b>Поддерживаемые видео форматы:</b>\n"
+        f"<code>{', '.join([fmt.value.upper() for fmt in VideoFormat])}</code>\n\n"
+        "💡 Файлы можно отправлять как медиа или документы.\n\n"
+        "🔗 Также можно отправить <b>ссылку на аудио/видео в Google Drive</b> (файл должен быть доступен по ссылке).",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command(commands=["transcribe_diarize", "диаризация"]))
+async def transcribe_diarize_command_handler(message: types.Message, state: FSMContext) -> None:
+    """Обработчик команды /transcribe_diarize - транскрибация с определением спикеров."""
+    hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
+    if not hf_token:
+        await message.answer(
+            "❌ <b>Диаризация недоступна</b>\n\n"
+            "Для работы нужен HuggingFace токен. Добавьте в .env:\n"
+            "<code>transcribe_HF_TOKEN=ваш_токен</code>\n\n"
+            "Примите условия: "
+            "<a href='https://huggingface.co/pyannote/speaker-diarization-community-1'>pyannote/speaker-diarization-community-1</a>",
+            parse_mode="HTML",
+        )
+        return
+    await state.set_state(TranscribeDiarizeState.waiting_for_file)
+    await message.answer(
+        "👥 <b>Транскрибация со спикерами</b>\n\n"
+        "📤 <b>Отправьте аудио или видео файл</b> — бот определит, кто когда говорил.\n\n"
+        "🎵 Подходят: голосовые, аудио, видео, документы.\n\n"
+        "⏱ Обработка займёт больше времени, чем обычная транскрибация.",
+        parse_mode="HTML",
+    )
 
 
 def format_time(seconds: float) -> str:
@@ -57,6 +105,25 @@ def format_transcription_with_timestamps(segments: list[dict]) -> str:
         if text:
             time_str = f"[{format_time(start_time)} → {format_time(end_time)}]"
             formatted_parts.append(f"{time_str} {text}")
+
+    return "\n".join(formatted_parts)
+
+
+def format_transcription_diarized(segments: list[dict]) -> str:
+    """Форматирует транскрибацию с таймкодами и спикерами."""
+    if not segments:
+        return ""
+
+    formatted_parts = []
+    for segment in segments:
+        start_time = segment.get("start", 0)
+        end_time = segment.get("end", 0)
+        speaker = segment.get("speaker", "SPEAKER_00")
+        text = segment.get("text", "").strip()
+
+        if text:
+            time_str = f"[{format_time(start_time)} → {format_time(end_time)}]"
+            formatted_parts.append(f"{time_str} {speaker}: {text}")
 
     return "\n".join(formatted_parts)
 
@@ -226,11 +293,7 @@ async def send_transcription_result(
     """Отправляет транскрипцию: сообщением если помещается, иначе .txt файлом."""
     if len(formatted_text) <= pre_max:
         safe_part = html.escape(formatted_text)
-        text_out = (
-            "✅ <b>Транскрибация завершена</b>\n\n"
-            "📝 <b>Текст с таймкодами:</b>\n\n"
-            f"<pre>{safe_part}</pre>"
-        )
+        text_out = "✅ <b>Транскрибация завершена</b>\n\n" "📝 <b>Текст с таймкодами:</b>\n\n" f"<pre>{safe_part}</pre>"
         await safe_answer(message, text_out, parse_mode="HTML")
     else:
         with tempfile.NamedTemporaryFile(
@@ -274,26 +337,6 @@ def get_file_extension(file_type: FileType, original_filename: str | None = None
     elif file_type == FileType.VIDEO_NOTE:
         return VideoFormat.MP4.value
     return AudioFormat.MP3.value
-
-
-@router.message(Command(commands=["transcribe", "транскрибация"]))
-async def transcribe_command_handler(message: types.Message) -> None:
-    """Обработчик команды /transcribe - ожидает аудио или голосовое сообщение."""
-    await message.answer(
-        "🎙️ <b>Транскрибация аудио и видео</b>\n\n"
-        "📤 <b>Отправьте файл одним из способов:</b>\n"
-        "• 🎤 Голосовое сообщение\n"
-        "• 🎵 Аудио файл\n"
-        "• 🎬 Видео файл\n"
-        "• 📎 Документ (аудио/видео)\n\n"
-        "🎵 <b>Поддерживаемые аудио форматы:</b>\n"
-        f"<code>{', '.join([fmt.value.upper() for fmt in AudioFormat])}</code>\n\n"
-        "🎬 <b>Поддерживаемые видео форматы:</b>\n"
-        f"<code>{', '.join([fmt.value.upper() for fmt in VideoFormat])}</code>\n\n"
-        "💡 Файлы можно отправлять как медиа или документы.\n\n"
-        "🔗 Также можно отправить <b>ссылку на аудио/видео в Google Drive</b> (файл должен быть доступен по ссылке).",
-        parse_mode="HTML",
-    )
 
 
 @router.message(GoogleDriveLinkFilter())
@@ -372,9 +415,7 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                 await safe_delete(status_msg)
                 segments = transcription_result.get("segments", [])
                 formatted_text = (
-                    format_transcription_with_timestamps(segments)
-                    if segments
-                    else transcription_result["text"]
+                    format_transcription_with_timestamps(segments) if segments else transcription_result["text"]
                 )
                 await send_transcription_result(message, formatted_text)
                 logger.info("Транскрибация по ссылке Google Drive завершена")
@@ -405,6 +446,182 @@ def is_audio_format(filename: str | None) -> bool:
         return False
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
     return ext in [fmt.value for fmt in AudioFormat]
+
+
+@router.message(
+    StateFilter(TranscribeDiarizeState.waiting_for_file),
+    F.voice | F.audio | F.video | F.video_note | F.document,
+)
+async def transcribe_diarize_handler(message: types.Message, state: FSMContext) -> None:
+    """Обработчик транскрибации с диаризацией (когда пользователь в режиме /transcribe_diarize)."""
+    await state.clear()
+    status_msg = await safe_answer(
+        message,
+        "⏳ <b>Начинаю транскрибацию со спикерами...</b>",
+        parse_mode="HTML",
+    )
+    if not status_msg or not message.bot:
+        if status_msg:
+            await safe_edit_text(status_msg, "❌ <b>Ошибка:</b> бот не инициализирован.", parse_mode="HTML")
+        return
+
+    file_id, file_name, file_type, file_size = _extract_file_info(message, status_msg)
+    if not file_id or not file_name:
+        return
+
+    try:
+        file_info = await _get_and_validate_file(message, file_id, file_size, status_msg)
+        if not file_info:
+            return
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_file_path = os.path.join(temp_dir, file_name)
+            await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
+            if not await _download_file(message, file_info, temp_file_path, status_msg):
+                return
+
+            await safe_edit_text(
+                status_msg,
+                "🔄 <b>Транскрибация и диаризация...</b>\n⏱ Это займёт больше времени",
+                parse_mode="HTML",
+            )
+
+            hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
+            result = await transcribe_with_diarization(
+                file_path=temp_file_path,
+                model=settings.transcribe.MODEL,
+                language=settings.transcribe.LANGUAGE,
+                device=settings.transcribe.DEVICE,
+                hf_token=hf_token,
+            )
+
+            if result and result.get("text"):
+                await safe_delete(status_msg)
+                segments = result.get("segments", [])
+                formatted = format_transcription_diarized(segments) if segments else result["text"]
+                await send_transcription_result(message, formatted)
+                logger.info(f"Транскрибация с диаризацией завершена: {file_name}")
+            else:
+                await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка при диаризации: {e}")
+        if status_msg:
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Ошибка при диаризации</b>\n\n<code>{html.escape(str(e))}</code>",
+                parse_mode="HTML",
+            )
+
+
+def _extract_file_info(message: types.Message, status_msg: types.Message | None) -> tuple:
+    """Извлекает file_id, file_name, file_type, file_size из сообщения."""
+    file_id = file_name = file_type = file_size = None
+    if message.voice:
+        file_id = message.voice.file_id
+        file_type = FileType.VOICE
+        file_name = f"voice_{file_id}.{get_file_extension(FileType.VOICE)}"
+        file_size = getattr(message.voice, "file_size", None)
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_type = FileType.AUDIO
+        ext = get_file_extension(FileType.AUDIO, message.audio.file_name)
+        file_name = message.audio.file_name or f"audio_{file_id}.{ext}"
+        file_size = getattr(message.audio, "file_size", None)
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = FileType.VIDEO
+        ext = get_file_extension(FileType.VIDEO, message.video.file_name)
+        file_name = message.video.file_name or f"video_{file_id}.{ext}"
+        file_size = getattr(message.video, "file_size", None)
+    elif message.video_note:
+        file_id = message.video_note.file_id
+        file_type = FileType.VIDEO_NOTE
+        file_name = f"video_note_{file_id}.{get_file_extension(FileType.VIDEO_NOTE)}"
+        file_size = getattr(message.video_note, "file_size", None)
+    elif message.document:
+        orig = message.document.file_name
+        file_size = getattr(message.document, "file_size", None)
+        if is_video_format(orig):
+            file_id = message.document.file_id
+            file_type = FileType.VIDEO
+            ext = get_file_extension(FileType.VIDEO, orig)
+            file_name = orig or f"video_{file_id}.{ext}"
+        elif is_audio_format(orig):
+            file_id = message.document.file_id
+            file_type = FileType.AUDIO
+            ext = get_file_extension(FileType.AUDIO, orig)
+            file_name = orig or f"audio_{file_id}.{ext}"
+        elif status_msg:
+            await safe_edit_text(
+                status_msg,
+                "❌ <b>Неподдерживаемый формат</b>\n\n"
+                f"Аудио: {', '.join([f.value.upper() for f in AudioFormat])}\n"
+                f"Видео: {', '.join([f.value.upper() for f in VideoFormat])}",
+                parse_mode="HTML",
+            )
+    return (file_id, file_name, file_type, file_size)
+
+
+async def _get_and_validate_file(
+    message: types.Message, file_id: str, file_size: int | None, status_msg: types.Message | None
+) -> types.File | None:
+    """Получает file_info и проверяет размер."""
+    try:
+        file_info = await message.bot.get_file(file_id)  # type: ignore[union-attr]
+    except TelegramBadRequest as e:
+        if "file is too big" in str(e).lower() and status_msg:
+            await safe_edit_text(
+                status_msg,
+                "❌ <b>Файл >20 MB</b>\n\nЛимит getFile: 20 MB.",
+                parse_mode="HTML",
+            )
+        else:
+            raise
+        return None
+    if not file_info.file_path:
+        if status_msg:
+            await safe_edit_text(status_msg, "❌ <b>Не удалось получить путь к файлу.</b>", parse_mode="HTML")
+        return None
+    fs = getattr(file_info, "file_size", None) or file_size
+    if fs and fs > MAX_FILE_SIZE and status_msg:
+        await safe_edit_text(
+            status_msg,
+            f"❌ <b>Файл слишком большой</b>\n\nМакс: {MAX_FILE_SIZE / (1024 * 1024):.0f} MB",
+            parse_mode="HTML",
+        )
+        return None
+    return file_info
+
+
+async def _download_file(
+    message: types.Message,
+    file_info: types.File,
+    dest: str,
+    status_msg: types.Message | None,
+) -> bool:
+    """Скачивает файл. Возвращает False при ошибке."""
+    try:
+        await download_file_with_progress(
+            bot=message.bot,
+            file_info=file_info,
+            destination_path=dest,
+            status_message=status_msg,
+            update_status_func=safe_edit_text,
+        )
+        if os.path.getsize(dest) == 0 and status_msg:
+            await safe_edit_text(status_msg, "⚠️ <b>Файл пустой.</b>", parse_mode="HTML")
+            return False
+        return True
+    except (TelegramBadRequest, FileDownloadError) as e:
+        if "file is too big" in str(e).lower() and status_msg:
+            await safe_edit_text(
+                status_msg,
+                f"❌ <b>Файл слишком большой</b>\n\nМакс: {MAX_FILE_SIZE / (1024 * 1024):.0f} MB",
+                parse_mode="HTML",
+            )
+        else:
+            raise
+        return False
 
 
 @router.message(F.voice | F.audio | F.video | F.video_note | F.document)
@@ -535,12 +752,9 @@ async def transcribe_handler(message: types.Message) -> None:
                     status_message=status_msg,
                     update_status_func=safe_edit_text,
                 )
-                size_info = (
-                    f", размер: {file_size / (1024 * 1024):.1f} MB" if file_size else ""
-                )
+                size_info = f", размер: {file_size / (1024 * 1024):.1f} MB" if file_size else ""
                 logger.info(
-                    f"Файл скачан: {temp_file_path}, тип: "
-                    f"{file_type.value if file_type else 'unknown'}{size_info}"
+                    f"Файл скачан: {temp_file_path}, тип: " f"{file_type.value if file_type else 'unknown'}{size_info}"
                 )
             except (TelegramBadRequest, FileDownloadError) as download_error:
                 error_str = str(download_error).lower()
@@ -585,9 +799,7 @@ async def transcribe_handler(message: types.Message) -> None:
 
                 segments = transcription_result.get("segments", [])
                 formatted_text = (
-                    format_transcription_with_timestamps(segments)
-                    if segments
-                    else transcription_result["text"]
+                    format_transcription_with_timestamps(segments) if segments else transcription_result["text"]
                 )
                 await send_transcription_result(message, formatted_text)
                 logger.info(f"Транскрибация завершена для файла {file_name}")

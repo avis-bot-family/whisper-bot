@@ -32,10 +32,11 @@ class TranscribeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="transcribe_")
 
     ENABLE_ON_STARTUP: bool = False
-    AUDIO_FILE_PATH: str = ""
+    AUDIO_FILE_PATH: str = "src/bot/audio/privet-druzya.mp3"
     MODEL: str = "medium"
     LANGUAGE: str = "Russian"
     DEVICE: str = "cpu"  # "cpu" или "cuda"
+    HF_TOKEN: str = ""  # HuggingFace токен для диаризации (pyannote)
 
 
 class LoggerConfig(BaseSettings):

@@ -465,7 +465,7 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
             await safe_edit_text(status_msg, "❌ <b>Ошибка:</b> бот не инициализирован.", parse_mode="HTML")
         return
 
-    file_id, file_name, file_type, file_size = _extract_file_info(message, status_msg)
+    file_id, file_name, file_type, file_size = await _extract_file_info(message, status_msg)
     if not file_id or not file_name:
         return
 
@@ -513,7 +513,7 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
             )
 
 
-def _extract_file_info(message: types.Message, status_msg: types.Message | None) -> tuple:
+async def _extract_file_info(message: types.Message, status_msg: types.Message | None) -> tuple:
     """Извлекает file_id, file_name, file_type, file_size из сообщения."""
     file_id = file_name = file_type = file_size = None
     if message.voice:

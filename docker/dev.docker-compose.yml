@@ -1,9 +1,9 @@
 services:
-  ping-pong-bot:
+  whisper-bot:
     build:
       context: ../
       dockerfile: docker/bot.Dockerfile
-    container_name: ping-pong-bot
+    container_name: whisper-bot
     restart: unless-stopped
     env_file: ../.docker.env
     ports:
@@ -12,7 +12,7 @@ services:
     volumes:
       - ../src/bot:/opt/bot
     networks:
-      - ping-pong-network
+      - whisper-network
     # Поддержка NVIDIA GPU
     runtime: nvidia
     environment:
@@ -20,7 +20,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 networks:
-  ping-pong-network:
+  whisper-network:
     driver: bridge
     ipam:
       config:

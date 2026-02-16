@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "ping-pong-bot"
+name = "whisper-bot"
 version = "0.1.0"
 description = ""
 authors = ["Your name <Your address email (you@example.com)>"]

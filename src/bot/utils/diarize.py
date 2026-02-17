@@ -131,7 +131,13 @@ def transcribe_with_diarization_sync(
             token=token,
         )
         if device == "cuda" and torch.cuda.is_available():
-            pipeline.to(torch.device("cuda"))
+            try:
+                pipeline.to(torch.device("cuda"))
+            except torch.cuda.OutOfMemoryError:
+                logger.warning(
+                    "CUDA OOM при диаризации (GPU занят?). Используется CPU."
+                )
+                torch.cuda.empty_cache()
 
         diarization_kwargs: dict[str, Any] = {}
         if num_speakers is not None:

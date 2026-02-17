@@ -43,7 +43,16 @@ def _transcribe_audio_sync(
             logger.warning("CUDA недоступна, используется CPU")
             device = "cpu"
 
-        model_obj = _get_model(model, device)
+        try:
+            model_obj = _get_model(model, device)
+        except torch.cuda.OutOfMemoryError:
+            logger.warning(
+                "CUDA out of memory (возможно, GPU занят Ollama). Fallback на CPU."
+            )
+            if device == "cuda":
+                torch.cuda.empty_cache()
+            device = "cpu"
+            model_obj = _get_model(model, device)
         # fp16=False на CUDA избегает NaN на некоторых GPU (torch 2.8+)
         use_fp16 = device != "cuda"
         result = model_obj.transcribe(

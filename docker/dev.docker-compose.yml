@@ -8,7 +8,8 @@ services:
     env_file: ../.docker.env
     ports:
       - ${DOCKER_BOT_PORT:-8081}:8081
-    command: poetry run python3 ./bot/main.py
+    # command: poetry run python3 ./bot/main.py
+    command: sleep infinity
     volumes:
       - ../src/bot:/opt/bot
     networks:
@@ -19,9 +20,29 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
+  ollama:
+    image: ollama/ollama
+    container_name: whisper-bot-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - whisper-network
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+    command: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2} && exec ollama serve"]
+
 networks:
   whisper-network:
     driver: bridge
     ipam:
       config:
         - subnet: 172.30.0.0/16
+
+volumes:
+  ollama_data:

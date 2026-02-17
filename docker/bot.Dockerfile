@@ -28,7 +28,7 @@ COPY pyproject.toml pyproject.toml
 RUN poetry install --no-root --only main
 
 # Установка PyTorch с поддержкой CUDA
-RUN poetry run pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+RUN poetry run pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # Копирования кода приложения
 COPY ./src/bot $APP_DIR

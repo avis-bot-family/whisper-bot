@@ -42,6 +42,15 @@ class TranscribeSettings(BaseSettings):
     DIARIZE_MAX_SPEAKERS: int = 5
 
 
+class SummarySettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="summary_")
+
+    BASE_URL: str = "http://localhost:11434/v1"  # Ollama (OpenAI-совместимый API)
+    MODEL: str = "llama3.2"  # Ollama: llama3.2, qwen2.5, mistral
+    MAX_RETRIES: int = 3  # Количество повторов при ошибке
+    REQUEST_TIMEOUT: int = 120  # Таймаут запроса в секундах
+
+
 class LoggerConfig(BaseSettings):
     LOG_LEVEL: str = "DEBUG"
 
@@ -53,6 +62,7 @@ class Settings(BaseSettings):
     logger_config: LoggerConfig = LoggerConfig()
     app_settings: AppSettings = AppSettings()
     transcribe: TranscribeSettings = TranscribeSettings()
+    summary: SummarySettings = SummarySettings()
 
 
 settings = Settings()

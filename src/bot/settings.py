@@ -31,13 +31,12 @@ class AppSettings(BaseSettings):
 class TranscribeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="transcribe_")
 
-    ENABLE_ON_STARTUP: bool = False
-    AUDIO_FILE_PATH: str = "src/bot/audio/privet-druzya.mp3"
+    WHISPER_SERVICE_URL: str = "http://localhost:8000"
+    TASKS_DIR: str = "/data/tasks"
     MODEL: str = "medium"
     LANGUAGE: str = "Russian"
-    DEVICE: str = "cpu"  # "cpu" или "cuda"
-    HF_TOKEN: str = ""  # HuggingFace токен для диаризации (pyannote)
-    DIARIZE_BY_DEFAULT: bool = True  # диаризация по умолчанию при транскрибации
+    HF_TOKEN: str = ""
+    DIARIZE_BY_DEFAULT: bool = True
     DIARIZE_MIN_SPEAKERS: int = 2
     DIARIZE_MAX_SPEAKERS: int = 5
 

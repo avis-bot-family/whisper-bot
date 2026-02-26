@@ -21,8 +21,8 @@ _src_dir = _script_dir.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from bot.utils.diarize import transcribe_with_diarization_sync
-from bot.utils.transcribe import _transcribe_audio_sync
+from transcribe_worker.diarize import transcribe_with_diarization_sync
+from transcribe_worker.transcribe import transcribe_audio_sync
 
 # HF_TOKEN или transcribe_HF_TOKEN в .env
 
@@ -139,7 +139,7 @@ def main() -> None:
             max_speakers=args.max_speakers,
         )
     else:
-        result = _transcribe_audio_sync(
+        result = transcribe_audio_sync(
             str(file_path),
             model=args.model,
             language=args.language,

@@ -26,7 +26,7 @@ if str(_src_dir) not in sys.path:
 
 from bot.schemas.summary import SummaryRequest  # noqa: E402
 from bot.settings import Settings  # noqa: E402
-from bot.utils.diarize import transcribe_with_diarization_sync  # noqa: E402
+from transcribe_worker.diarize import transcribe_with_diarization_sync  # noqa: E402
 from bot.utils.summary_generator import (  # noqa: E402
     SummaryGenerator,
     format_summary_for_display,

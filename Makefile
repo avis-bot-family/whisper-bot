@@ -1,35 +1,43 @@
-# Docker Compose: docker/dev.docker-compose.yml
-COMPOSE_FILE = docker/dev.docker-compose.yml
+BASE_DOCKER_COMPOSE = -f docker/dev.docker-compose.yml
 ENV_FILE = ./.docker.env
 LOCAL_ENV_FILE =  ./.env
-
-.PHONY: ollama-up ollama-down ollama-pull ollama-logs up down logs
 
 .PHONY: create_env
 create_env: ## Just touching env files
 	touch $(ENV_FILE)
 	touch $(LOCAL_ENV_FILE)
 
-up:
-	docker compose -f $(COMPOSE_FILE) up -d
+.PHONY: up
+up: create_env ## up services
+	@docker compose $(if $(profile),--profile $(profile)) --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) up $(service) -d
 
-down:
-	docker compose -f $(COMPOSE_FILE) down
+.PHONY: logs
+logs: create_env ## tail logs services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) logs $(service) -f
+
+.PHONY: down
+down: create_env ## down services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) down $(service)
+
+.PHONY: build
+build: create_env ## build services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) build --no-cache $(service)
+
+.PHONY: stats
+stats: create_env ## stats services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) stats $(service)
 
 .PHONY: restart
 restart: create_env down up ## restart services
 
-logs:
-	docker compose -f $(COMPOSE_FILE) logs -f
+.PHONY: uninstall
+uninstall: ## uninstall all services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) down --remove-orphans --volumes $(service)
 
-ollama-up:
-	docker compose -f $(COMPOSE_FILE) up -d ollama
+.PHONY: config
+config: create_env ## show config services
+	@docker compose --env-file $(ENV_FILE) $(BASE_DOCKER_COMPOSE) config $(service)
 
-ollama-down:
-	docker compose -f $(COMPOSE_FILE) stop ollama
-
-ollama-pull:
-	docker compose -f $(COMPOSE_FILE) exec ollama ollama pull llama3.2
-
-ollama-logs:
-	docker compose -f $(COMPOSE_FILE) logs -f ollama
+.PHONY: help
+help: ## Help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

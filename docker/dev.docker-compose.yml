@@ -12,15 +12,34 @@ services:
     # command: sleep infinity
     volumes:
       - ../src/bot:/opt/bot
-      - ../src/scripts:/opt/scripts
+      - transcribe_data:/data/tasks
     networks:
       - whisper-network
-    # Поддержка NVIDIA GPU
-    runtime: nvidia
     environment:
       - summary_BASE_URL=http://ollama:11434/v1
+      - transcribe_WHISPER_SERVICE_URL=http://transcribe-worker:8000
+      - transcribe_TASKS_DIR=/data/tasks
+    depends_on:
+      - transcribe-worker
+      - ollama
+
+  transcribe-worker:
+    build:
+      context: ../
+      dockerfile: docker/worker.Dockerfile
+    container_name: whisper-bot-worker
+    restart: unless-stopped
+    env_file: ../.docker.env
+    volumes:
+      - ../src/transcribe_worker:/opt/transcribe_worker
+      - transcribe_data:/data/tasks
+    networks:
+      - whisper-network
+    runtime: nvidia
+    environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - worker_DEVICE=cuda
 
   ollama:
     image: ollama/ollama
@@ -44,4 +63,5 @@ networks:
   whisper-network:
 
 volumes:
+  transcribe_data:
   ollama_data:

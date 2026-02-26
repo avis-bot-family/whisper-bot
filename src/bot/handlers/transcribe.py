@@ -2,8 +2,11 @@ import asyncio
 import html
 import os
 import re
+import shutil
 import tempfile
+import uuid
 from datetime import datetime
+from pathlib import Path
 
 from aiogram import F, Router, types
 from aiogram.types import FSInputFile
@@ -435,9 +438,11 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
         if not status_msg:
             logger.error("Не удалось отправить начальное статусное сообщение")
             return
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Расширение по умолчанию для аудио; Whisper определит формат по содержимому
-            temp_file_path = os.path.join(temp_dir, f"gdrive_{gdrive_file_id}.mp3")
+        task_id = str(uuid.uuid4())
+        task_dir = Path(settings.transcribe.TASKS_DIR) / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            temp_file_path = str(task_dir / f"gdrive_{gdrive_file_id}.mp3")
 
             await safe_edit_text(status_msg, "📥 <b>Скачиваю файл с Google Drive...</b>", parse_mode="HTML")
             try:
@@ -493,7 +498,6 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                     file_path=temp_file_path,
                     model=settings.transcribe.MODEL,
                     language=settings.transcribe.LANGUAGE,
-                    device=settings.transcribe.DEVICE,
                     hf_token=hf_token,
                     min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
                     max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
@@ -504,7 +508,6 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                     file_path=temp_file_path,
                     model=settings.transcribe.MODEL,
                     language=settings.transcribe.LANGUAGE,
-                    device=settings.transcribe.DEVICE,
                 )
                 format_fn = format_transcription_with_timestamps
 
@@ -519,6 +522,8 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                 logger.info("Транскрибация по ссылке Google Drive завершена")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
 
     except Exception as e:
         logger.error(f"Ошибка при транскрибации по ссылке Google Drive: {e}")
@@ -567,45 +572,46 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
     if not file_id or not file_name:
         return
 
+    task_id = str(uuid.uuid4())
+    task_dir = Path(settings.transcribe.TASKS_DIR) / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
     try:
         file_info = await _get_and_validate_file(message, file_id, file_size, status_msg)
         if not file_info:
             return
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_file_path = os.path.join(temp_dir, file_name)
-            await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
-            if not await _download_file(message, file_info, temp_file_path, status_msg):
-                return
+        temp_file_path = str(task_dir / file_name)
+        await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
+        if not await _download_file(message, file_info, temp_file_path, status_msg):
+            return
 
-            await safe_edit_text(
-                status_msg,
-                "🔄 <b>Транскрибация и диаризация...</b>\n⏱ Это займёт больше времени",
-                parse_mode="HTML",
+        await safe_edit_text(
+            status_msg,
+            "🔄 <b>Транскрибация и диаризация...</b>\n⏱ Это займёт больше времени",
+            parse_mode="HTML",
+        )
+
+        hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
+        result = await transcribe_with_diarization(
+            file_path=temp_file_path,
+            model=settings.transcribe.MODEL,
+            language=settings.transcribe.LANGUAGE,
+            hf_token=hf_token,
+            min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
+            max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
+        )
+
+        if result and result.get("text"):
+            await safe_delete(status_msg)
+            segments = result.get("segments", [])
+            formatted = format_transcription_diarized(segments) if segments else result["text"]
+            await send_transcription_result(message, formatted)
+            await _try_generate_and_send_summary(
+                message, segments, formatted, use_diarize=True
             )
-
-            hf_token = settings.transcribe.HF_TOKEN or os.environ.get("HF_TOKEN")
-            result = await transcribe_with_diarization(
-                file_path=temp_file_path,
-                model=settings.transcribe.MODEL,
-                language=settings.transcribe.LANGUAGE,
-                device=settings.transcribe.DEVICE,
-                hf_token=hf_token,
-                min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
-                max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
-            )
-
-            if result and result.get("text"):
-                await safe_delete(status_msg)
-                segments = result.get("segments", [])
-                formatted = format_transcription_diarized(segments) if segments else result["text"]
-                await send_transcription_result(message, formatted)
-                await _try_generate_and_send_summary(
-                    message, segments, formatted, use_diarize=True
-                )
-                logger.info(f"Транскрибация с диаризацией завершена: {file_name}")
-            else:
-                await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+            logger.info(f"Транскрибация с диаризацией завершена: {file_name}")
+        else:
+            await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка при диаризации: {e}")
         if status_msg:
@@ -614,6 +620,8 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
                 f"❌ <b>Ошибка при диаризации</b>\n\n<code>{html.escape(str(e))}</code>",
                 parse_mode="HTML",
             )
+    finally:
+        shutil.rmtree(task_dir, ignore_errors=True)
 
 
 async def _extract_file_info(message: types.Message, status_msg: types.Message | None) -> tuple:
@@ -841,11 +849,12 @@ async def transcribe_handler(message: types.Message) -> None:
             logger.warning(f"Файл слишком большой: {file_size_mb:.1f} MB (максимум: {max_size_mb:.0f} MB)")
             return
 
-        # Создаем временную директорию для работы
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_file_path = os.path.join(temp_dir, file_name)
+        task_id = str(uuid.uuid4())
+        task_dir = Path(settings.transcribe.TASKS_DIR) / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            temp_file_path = str(task_dir / file_name)
 
-            # Скачиваем файл с использованием оптимизированного модуля
             await safe_edit_text(status_msg, "📥 <b>Скачиваю файл...</b>", parse_mode="HTML")
             try:
                 await download_file_with_progress(
@@ -857,7 +866,8 @@ async def transcribe_handler(message: types.Message) -> None:
                 )
                 size_info = f", размер: {file_size / (1024 * 1024):.1f} MB" if file_size else ""
                 logger.info(
-                    f"Файл скачан: {temp_file_path}, тип: " f"{file_type.value if file_type else 'unknown'}{size_info}"
+                    f"Файл скачан: {temp_file_path}, тип: "
+                    f"{file_type.value if file_type else 'unknown'}{size_info}"
                 )
             except (TelegramBadRequest, FileDownloadError) as download_error:
                 error_str = str(download_error).lower()
@@ -874,7 +884,6 @@ async def transcribe_handler(message: types.Message) -> None:
                     return
                 raise
 
-            # Проверка на пустой файл (0 байт)
             if os.path.getsize(temp_file_path) == 0:
                 await safe_edit_text(
                     status_msg,
@@ -900,7 +909,6 @@ async def transcribe_handler(message: types.Message) -> None:
                     file_path=temp_file_path,
                     model=settings.transcribe.MODEL,
                     language=settings.transcribe.LANGUAGE,
-                    device=settings.transcribe.DEVICE,
                     hf_token=hf_token,
                     min_speakers=settings.transcribe.DIARIZE_MIN_SPEAKERS,
                     max_speakers=settings.transcribe.DIARIZE_MAX_SPEAKERS,
@@ -911,7 +919,6 @@ async def transcribe_handler(message: types.Message) -> None:
                     file_path=temp_file_path,
                     model=settings.transcribe.MODEL,
                     language=settings.transcribe.LANGUAGE,
-                    device=settings.transcribe.DEVICE,
                 )
                 format_fn = format_transcription_with_timestamps
 
@@ -927,6 +934,8 @@ async def transcribe_handler(message: types.Message) -> None:
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
 
     except TelegramBadRequest as e:
         error_str = str(e).lower()

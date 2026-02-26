@@ -7,7 +7,6 @@ from bot.handlers import get_handlers_router
 from bot.keyboards.default_commands import remove_default_commands, set_default_commands
 from bot.middlewares import register_middlewares
 from bot.settings import Settings
-from bot.utils.transcribe import transcribe_audio
 
 settings = Settings()
 
@@ -49,44 +48,8 @@ async def on_startup() -> None:
     else:
         logger.info("Bot работает через POLLING")
 
-    # Транскрибация при старте, если включена
-    if settings.transcribe.ENABLE_ON_STARTUP:
-        await run_startup_transcribe()
-
+    logger.info(f"Transcribe worker: {settings.transcribe.WHISPER_SERVICE_URL}")
     logger.info("bot started")
-
-
-async def run_startup_transcribe() -> None:
-    """Запускает транскрибацию файла при старте бота, если включена в настройках."""
-    audio_file_path = settings.transcribe.AUDIO_FILE_PATH
-
-    if not audio_file_path:
-        logger.warning(
-            "Транскрибация при старте включена, но файл не указан. Проверьте настройку transcribe_AUDIO_FILE_PATH"
-        )
-        return
-
-    logger.info("=" * 50)
-    logger.info("Запуск транскрибации при старте бота")
-    logger.info(f"Файл: {audio_file_path}")
-    logger.info("=" * 50)
-
-    try:
-        result = await transcribe_audio(
-            file_path=audio_file_path,
-            model=settings.transcribe.MODEL,
-            language=settings.transcribe.LANGUAGE,
-            device=settings.transcribe.DEVICE,
-        )
-
-        logger.info("=" * 50)
-        logger.info("РЕЗУЛЬТАТ ТРАНСКРИБАЦИИ:")
-        logger.info("=" * 50)
-        logger.info(result.get("text", str(result)))
-        logger.info("=" * 50)
-
-    except Exception as e:
-        logger.error(f"Ошибка при транскрибации при старте: {e}")
 
 
 async def on_shutdown() -> None:

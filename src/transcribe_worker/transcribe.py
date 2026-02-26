@@ -1,0 +1,77 @@
+import torch
+import whisper
+from loguru import logger
+
+_model_cache: dict[tuple[str, str], whisper.Whisper] = {}
+
+
+def _get_model(model: str, device: str) -> whisper.Whisper:
+    """Возвращает загруженную модель Whisper (с кэшированием)."""
+    key = (model, device)
+    if key not in _model_cache:
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        _model_cache[key] = whisper.load_model(model, device=device)
+    return _model_cache[key]
+
+
+def transcribe_audio_sync(
+    file_path: str,
+    model: str = "medium",
+    language: str = "Russian",
+    device: str = "cpu",
+) -> dict:
+    """Синхронная транскрибация аудио через Whisper.
+
+    Возвращает словарь с ключами:
+    - "text": полный текст транскрибации
+    - "segments": список сегментов с таймкодами
+    """
+    try:
+        logger.info(f"Начинаю транскрибацию файла: {file_path}")
+        logger.info(f"Модель: {model}, Язык: {language}, Устройство: {device}")
+
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("Очищен кеш CUDA")
+
+        if device == "cuda" and not torch.cuda.is_available():
+            logger.warning("CUDA недоступна, используется CPU")
+            device = "cpu"
+
+        try:
+            model_obj = _get_model(model, device)
+        except torch.cuda.OutOfMemoryError:
+            logger.warning(
+                "CUDA out of memory (возможно, GPU занят Ollama). Fallback на CPU."
+            )
+            if device == "cuda":
+                torch.cuda.empty_cache()
+            device = "cpu"
+            model_obj = _get_model(model, device)
+
+        # fp16=False на CUDA избегает NaN на некоторых GPU (torch 2.8+)
+        use_fp16 = device != "cuda"
+        result = model_obj.transcribe(
+            file_path,
+            task="transcribe",
+            language=language,
+            fp16=use_fp16,
+        )
+
+        transcribed_text = result["text"].strip()
+        segments = result.get("segments", [])
+        logger.info(f"Транскрибация завершена успешно. Сегментов: {len(segments)}")
+
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return {
+            "text": transcribed_text,
+            "segments": segments,
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при транскрибации: {e}")
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        raise

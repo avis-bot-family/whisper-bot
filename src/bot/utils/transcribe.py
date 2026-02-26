@@ -1,103 +1,36 @@
-import asyncio
-
-import torch
-import whisper
+import httpx
 from loguru import logger
 
-_model_cache: dict[tuple[str, str], whisper.Whisper] = {}
+from bot.settings import settings
+
+_client: httpx.AsyncClient | None = None
 
 
-def _get_model(model: str, device: str) -> whisper.Whisper:
-    """Возвращает загруженную модель Whisper (с кэшированием)."""
-    key = (model, device)
-    if key not in _model_cache:
-        if device == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        _model_cache[key] = whisper.load_model(model, device=device)
-    return _model_cache[key]
-
-
-def _transcribe_audio_sync(
-    file_path: str,
-    model: str = "medium",
-    language: str = "Russian",
-    device: str = "cpu",
-) -> dict:
-    """Синхронная версия транскрибации для использования в отдельном потоке.
-
-    Возвращает словарь с ключами:
-    - "text": полный текст транскрибации
-    - "segments": список сегментов с таймкодами
-    """
-    try:
-        logger.info(f"Начинаю транскрибацию файла: {file_path}")
-        logger.info(f"Модель: {model}, Язык: {language}, Устройство: {device}")
-
-        # Очистка памяти CUDA перед загрузкой модели
-        if device == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("Очищен кеш CUDA")
-
-        # Определяем устройство
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA недоступна, используется CPU")
-            device = "cpu"
-
-        try:
-            model_obj = _get_model(model, device)
-        except torch.cuda.OutOfMemoryError:
-            logger.warning(
-                "CUDA out of memory (возможно, GPU занят Ollama). Fallback на CPU."
-            )
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            device = "cpu"
-            model_obj = _get_model(model, device)
-        # fp16=False на CUDA избегает NaN на некоторых GPU (torch 2.8+)
-        use_fp16 = device != "cuda"
-        result = model_obj.transcribe(
-            file_path,
-            task="transcribe",
-            language=language,
-            fp16=use_fp16,
-        )
-
-        transcribed_text = result["text"].strip()
-        segments = result.get("segments", [])
-        logger.info(f"Транскрибация завершена успешно. Сегментов: {len(segments)}")
-
-        # Освобождаем неиспользуемую память CUDA (модель остаётся в кэше)
-        if device == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        return {
-            "text": transcribed_text,
-            "segments": segments,
-        }
-    except Exception as e:
-        logger.error(f"Ошибка при транскрибации: {e}")
-        # Очистка памяти в случае ошибки
-        if device == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        raise
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+    return _client
 
 
 async def transcribe_audio(
     file_path: str,
     model: str = "medium",
     language: str = "Russian",
-    device: str = "cpu",
 ) -> dict:
-    """Запускает транскрибацию аудио файла через whisper в отдельном потоке.
+    """Отправляет запрос на транскрибацию в transcribe-worker.
 
     Возвращает словарь с ключами:
     - "text": полный текст транскрибации
     - "segments": список сегментов с таймкодами
     """
-    return await asyncio.to_thread(
-        _transcribe_audio_sync,
-        file_path,
-        model,
-        language,
-        device,
-    )
+    url = f"{settings.transcribe.WHISPER_SERVICE_URL}/transcribe"
+    payload = {"file_path": file_path, "model": model, "language": language}
+
+    logger.info(f"Запрос транскрибации: {url} file_path={file_path}")
+    client = _get_client()
+    response = await client.post(url, json=payload)
+    response.raise_for_status()
+    result = response.json()
+    logger.info(f"Транскрибация завершена. Сегментов: {len(result.get('segments', []))}")
+    return result

@@ -19,7 +19,7 @@ _src_dir = _script_dir.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from bot.utils.transcribe import _transcribe_audio_sync
+from transcribe_worker.transcribe import transcribe_audio_sync
 
 # Путь к файлу по умолчанию (относительно расположения скрипта)
 DEFAULT_FILE = _script_dir.parent / "bot" / "audio" / "privet-druzya.mp3"
@@ -86,7 +86,7 @@ def main() -> None:
         print(f"Ошибка: файл не найден: {file_path}")
         raise SystemExit(1)
 
-    result = _transcribe_audio_sync(
+    result = transcribe_audio_sync(
         str(file_path),
         model=args.model,
         language=args.language,

@@ -1,0 +1,16 @@
+# Override для запуска без GPU (когда NVIDIA Container Toolkit не установлен).
+# Использование: make up-cpu
+# Или: docker compose -f docker/dev.docker-compose.yml -f docker/dev.docker-compose.cpu.yml up -d
+
+services:
+  transcribe-worker:
+    runtime: runc
+    environment:
+      - worker_DEVICE=cpu
+    deploy: {}
+
+  ollama:
+    runtime: runc
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+    deploy: {}

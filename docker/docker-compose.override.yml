@@ -1,0 +1,3 @@
+# Переопределение общих параметров (порты, env, volumes).
+# Автоматически мержится с dev.docker-compose.yml при docker compose up.
+services: {}

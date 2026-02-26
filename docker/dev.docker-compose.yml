@@ -42,7 +42,7 @@ services:
       - worker_DEVICE=cuda
 
   ollama:
-    image: ollama/ollama
+    image: avis20/ollama
     container_name: whisper-bot-ollama
     entrypoint: ["/bin/sh", "-c"]
     ports:

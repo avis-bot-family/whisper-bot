@@ -24,6 +24,7 @@ services:
   ollama:
     image: ollama/ollama
     container_name: whisper-bot-ollama
+    entrypoint: ["/bin/sh", "-c"]
     ports:
       - "11434:11434"
     volumes:
@@ -36,7 +37,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
-    command: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2} && exec ollama serve"]
+    command: ["ollama pull ${OLLAMA_MODEL:-llama3.2} && exec ollama serve"]
 
 networks:
   whisper-network:

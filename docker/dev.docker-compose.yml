@@ -12,6 +12,7 @@ services:
     command: sleep infinity
     volumes:
       - ../src/bot:/opt/bot
+      - ../src/scripts:/opt/scripts
     networks:
       - whisper-network
     # Поддержка NVIDIA GPU

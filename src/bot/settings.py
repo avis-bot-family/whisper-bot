@@ -49,6 +49,7 @@ class SummarySettings(BaseSettings):
     MODEL: str = "llama3.2"  # Ollama: llama3.2, qwen2.5, mistral
     MAX_RETRIES: int = 3  # Количество повторов при ошибке
     REQUEST_TIMEOUT: int = 120  # Таймаут запроса в секундах
+    ENABLE_AFTER_TRANSCRIBE: bool = True  # Генерировать summary после транскрибации в боте
 
 
 class LoggerConfig(BaseSettings):

@@ -3,6 +3,7 @@ import html
 import os
 import re
 import tempfile
+from datetime import datetime
 
 from aiogram import F, Router, types
 from aiogram.types import FSInputFile
@@ -14,9 +15,11 @@ from loguru import logger
 from bot.enums.file_formats import AudioFormat, FileType, VideoFormat
 from bot.settings import Settings
 from bot.states import TranscribeDiarizeState
+from bot.schemas.summary import SummaryRequest
 from bot.utils.diarize import transcribe_with_diarization
 from bot.utils.download import download_file_with_progress, FileDownloadError
 from bot.utils.google_drive import download_from_google_drive, extract_google_drive_file_id
+from bot.utils.summary_generator import SummaryGenerator, format_summary_for_display
 from bot.utils.transcribe import transcribe_audio
 
 settings = Settings()
@@ -130,6 +133,77 @@ def format_transcription_diarized(segments: list[dict]) -> str:
             formatted_parts.append(f"{time_str} {speaker}: {text}")
 
     return "\n".join(formatted_parts)
+
+
+def _extract_speakers_from_segments(segments: list[dict]) -> str:
+    """Извлекает уникальных спикеров из сегментов для SummaryRequest."""
+    speakers = set()
+    for seg in segments:
+        sp = seg.get("speaker")
+        if sp:
+            speakers.add(sp)
+    if speakers:
+        return "\n".join(f"- {s}" for s in sorted(speakers))
+    return "(не определены)"
+
+
+async def _try_generate_and_send_summary(
+    message: types.Message,
+    segments: list[dict],
+    transcription_text: str,
+    use_diarize: bool,
+) -> None:
+    """Генерирует и отправляет AI summary по аналогии с generate_summary_local.py."""
+    base_url = settings.summary.BASE_URL or os.environ.get("SUMMARY_BASE_URL", "")
+    if not base_url or not settings.summary.ENABLE_AFTER_TRANSCRIBE:
+        return
+
+    status_msg: types.Message | None = None
+    try:
+        participants = (
+            _extract_speakers_from_segments(segments)
+            if use_diarize and segments
+            else "(не определены)"
+        )
+        meeting_date = datetime.now().strftime("%Y-%m-%d")
+
+        request = SummaryRequest(
+            meeting_date=meeting_date,
+            participants_formatted=participants,
+            context_hints="(не указан)",
+            transcription_text=transcription_text,
+        )
+
+        generator = SummaryGenerator(
+            base_url=base_url,
+            model=settings.summary.MODEL,
+            max_retries=settings.summary.MAX_RETRIES,
+            request_timeout=settings.summary.REQUEST_TIMEOUT,
+        )
+
+        status_msg = await safe_answer(
+            message,
+            "⏳ <b>Генерирую AI summary...</b>",
+            parse_mode="HTML",
+        )
+        if not status_msg:
+            return
+
+        summary_result = await generator.generate(request)
+        await safe_delete(status_msg)
+
+        formatted = format_summary_for_display(summary_result)
+        await safe_answer(message, formatted)
+        logger.info("Summary сгенерирован и отправлен")
+    except Exception as e:
+        logger.warning(f"Не удалось сгенерировать summary: {e}")
+        if status_msg:
+            await safe_edit_text(
+                status_msg,
+                f"⚠️ <b>Summary недоступен</b>\n\n<code>{html.escape(str(e))}</code>",
+                parse_mode="HTML",
+            )
+        # Не прерываем — транскрибация уже отправлена
 
 
 def split_long_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
@@ -439,6 +513,9 @@ async def transcribe_google_drive_link_handler(message: types.Message) -> None:
                 segments = transcription_result.get("segments", [])
                 formatted_text = format_fn(segments) if segments else transcription_result["text"]
                 await send_transcription_result(message, formatted_text)
+                await _try_generate_and_send_summary(
+                    message, segments, formatted_text, use_diarize
+                )
                 logger.info("Транскрибация по ссылке Google Drive завершена")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
@@ -523,6 +600,9 @@ async def transcribe_diarize_handler(message: types.Message, state: FSMContext) 
                 segments = result.get("segments", [])
                 formatted = format_transcription_diarized(segments) if segments else result["text"]
                 await send_transcription_result(message, formatted)
+                await _try_generate_and_send_summary(
+                    message, segments, formatted, use_diarize=True
+                )
                 logger.info(f"Транскрибация с диаризацией завершена: {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")
@@ -841,6 +921,9 @@ async def transcribe_handler(message: types.Message) -> None:
                 segments = transcription_result.get("segments", [])
                 formatted_text = format_fn(segments) if segments else transcription_result["text"]
                 await send_transcription_result(message, formatted_text)
+                await _try_generate_and_send_summary(
+                    message, segments, formatted_text, use_diarize
+                )
                 logger.info(f"Транскрибация завершена для файла {file_name}")
             else:
                 await safe_edit_text(status_msg, "⚠️ <b>Не удалось распознать текст в аудио.</b>", parse_mode="HTML")

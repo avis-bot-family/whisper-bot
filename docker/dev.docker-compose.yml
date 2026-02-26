@@ -8,8 +8,8 @@ services:
     env_file: ../.docker.env
     ports:
       - ${DOCKER_BOT_PORT:-8081}:8081
-    # command: poetry run python3 ./bot/main.py
-    command: sleep infinity
+    command: poetry run python3 ./bot/main.py
+    # command: sleep infinity
     volumes:
       - ../src/bot:/opt/bot
       - ../src/scripts:/opt/scripts

@@ -24,7 +24,7 @@ WORKDIR $SRC_DIR
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir poetry==$POETRY_VERSION
 
-COPY pyproject.toml pyproject.toml
+COPY pyproject.toml poetry.lock ./
 RUN poetry install --no-root --only main
 
 # Установка PyTorch с поддержкой CUDA

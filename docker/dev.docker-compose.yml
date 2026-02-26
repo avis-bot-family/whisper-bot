@@ -37,14 +37,10 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
-    command: ["ollama pull ${OLLAMA_MODEL:-llama3.2} && exec ollama serve"]
+    command: ["ollama serve & sleep 5 && ollama pull ${OLLAMA_MODEL:-llama3.2} && wait"]
 
 networks:
   whisper-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.30.0.0/16
 
 volumes:
   ollama_data:

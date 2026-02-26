@@ -18,6 +18,7 @@ services:
     # Поддержка NVIDIA GPU
     runtime: nvidia
     environment:
+      - summary_BASE_URL=http://ollama:11434/v1
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
